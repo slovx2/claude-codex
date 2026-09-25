@@ -250,6 +250,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       let stopped = false
       try {
         try {
+          await nativeProcess.stopIfUnconfirmed()
           await mcp.close()
         } finally {
           if (!(await nativeProcess.wait(3_000))) await nativeProcess.terminate()
@@ -285,8 +286,11 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     // SDK 的 abort 先关闭 stdin，CLI 仍有退出宽限期；此时释放 MCP
     // 会把错误工具结果送回尚未中断的模型循环。先等待 CLI 确认中断。
     const nativeProcess = this.processes.get(threadId)
-    if (pending && !(await succeedsWithin(pending.query.interrupt(), 1_500)))
-      await nativeProcess?.terminate()
+    if (pending) {
+      if (await succeedsWithin(pending.query.interrupt(), 1_500))
+        nativeProcess?.allowGracefulClose()
+      else await nativeProcess?.terminate()
+    }
     this.inputs.get(threadId)?.close()
     this.aborts.get(threadId)?.abort()
     if (pending) await this.stopWorkflowTasks(pending)
@@ -1422,6 +1426,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
 
     pending.deferredResult = null
     pending.resolved = true
+    this.processes.get(pending.context.threadId)?.allowGracefulClose()
     pending.input.close()
     this.turns.delete(pending.context.turnId)
     try {

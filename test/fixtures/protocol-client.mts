@@ -12,6 +12,8 @@ export class ProtocolClient {
   private readonly modelEndpoint: string
   private protocolErrors: Error[] = []
   readonly process: ChildProcessWithoutNullStreams
+  private readonly transportClosed: Promise<void>
+  private expectedCloseSignal: NodeJS.Signals | undefined
   private sequence = 0
   private pending = new Map<
     number,
@@ -53,6 +55,20 @@ export class ProtocolClient {
       DEBUG_CLAUDE_AGENT_SDK: '1',
     }
     this.process = spawn(process.execPath, [resolve('dist/src/adapter.mjs'), 'app-server'], { env })
+    this.transportClosed = new Promise((resolve) => {
+      this.process.once('close', (exitCode, signal) => {
+        this.trace.push({
+          transport: {
+            event: 'closed',
+            source: 'process',
+            exitCode,
+            signal,
+            ...(this.expectedCloseSignal ? { expectedSignal: this.expectedCloseSignal } : {}),
+          },
+        })
+        resolve()
+      })
+    })
     this.process.stderr.on('data', (chunk) => {
       this.stderr += String(chunk)
     })
@@ -183,12 +199,15 @@ export class ProtocolClient {
     }
     throw new Error(`通知超时 ${method}: ${this.stderr}`)
   }
+  crash(): void {
+    this.expectedCloseSignal = 'SIGKILL'
+    if (!this.process.kill('SIGKILL')) throw new Error('无法注入适配器进程崩溃')
+  }
   async close(): Promise<void> {
     if (this.process.exitCode === null && this.process.signalCode === null) {
-      const exited = new Promise<void>((resolve) => this.process.once('exit', () => resolve()))
       this.process.kill('SIGTERM')
-      await exited
     }
+    await this.transportClosed
     // CLI 将部分连接错误写入配置目录，stderr 可能为空；只读本用例的临时目录。
     const debugDirectory = join(this.home, 'claude', 'debug')
     const debugFiles = await readdir(debugDirectory, { withFileTypes: true }).catch(() => [])

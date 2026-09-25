@@ -1,4 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
+import { createInterface } from 'node:readline'
+import { fileURLToPath } from 'node:url'
 import type { SpawnedProcess, SpawnOptions } from '@anthropic-ai/claude-agent-sdk'
 import { debugLog } from './util.mjs'
 
@@ -8,6 +10,7 @@ export class NativeProcess {
   private closed = false
   private exited: Promise<void> = Promise.resolve()
   private terminating: Promise<void> | undefined
+  private gracefulClose = false
 
   private readonly threadId: string
   private readonly turnId: string
@@ -19,18 +22,32 @@ export class NativeProcess {
 
   spawn(options: SpawnOptions): SpawnedProcess {
     if (this.child) throw new Error('同一个原生回合不能启动第二个 CLI')
-    const child = spawn(options.command, options.args, {
-      cwd: options.cwd,
-      env: options.env,
-      signal: options.signal,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      detached: process.platform !== 'win32',
-    })
+    const child = spawn(
+      process.execPath,
+      [
+        fileURLToPath(new URL('./native-process-guard.mjs', import.meta.url)),
+        options.command,
+        ...options.args,
+      ],
+      {
+        cwd: options.cwd,
+        env: options.env,
+        signal: options.signal,
+        stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
+      },
+    ) as ChildProcessWithoutNullStreams
     this.child = child
-    debugLog('native.process.started', {
-      threadId: this.threadId,
-      turnId: this.turnId,
-      childPid: child.pid,
+    const identity = child.stdio[3]
+    if (!identity || !('read' in identity)) throw new Error('无法读取 CLI 进程身份')
+    createInterface({ input: identity }).on('line', (line) => {
+      const { childPid } = JSON.parse(line) as { childPid: number }
+      debugLog('native.process.started', {
+        threadId: this.threadId,
+        turnId: this.turnId,
+        childPid,
+        guardianPid: child.pid,
+      })
     })
     child.stderr.on('data', (data) => process.stderr.write(data))
     this.exited = new Promise<void>((resolve) => {
@@ -49,6 +66,18 @@ export class NativeProcess {
 
   async wait(milliseconds: number): Promise<boolean> {
     return succeedsWithin(this.exited, milliseconds)
+  }
+
+  allowGracefulClose(): void {
+    if (this.gracefulClose || this.closed) return
+    const control = this.child?.stdio[4]
+    if (!control || !('write' in control)) return
+    this.gracefulClose = true
+    control.write('g')
+  }
+
+  async stopIfUnconfirmed(): Promise<void> {
+    if (!this.gracefulClose) await this.terminate()
   }
 
   terminate(): Promise<void> {

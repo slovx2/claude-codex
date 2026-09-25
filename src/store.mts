@@ -942,7 +942,13 @@ export class SessionStore {
         completedAt,
         durationMs,
         errorJson,
-        this.terminalizeStaleItems(row.items_json, message),
+        this.terminalizeStaleItems(
+          row.items_json,
+          message,
+          true,
+          false,
+          this.uncertainToolIds(row.thread_id),
+        ),
         row.id,
       )
       seenThreads.add(String(row.thread_id))
@@ -971,6 +977,7 @@ export class SessionStore {
         message,
         row.status !== 'completed',
         row.status === 'completed',
+        this.uncertainToolIds(row.thread_id),
       )
       if (itemsJson === row.items_json) continue
       updateItems.run(itemsJson, row.id)
@@ -1007,11 +1014,19 @@ export class SessionStore {
   // A recovered turn is also replayed from its persisted item list. Clear any
   // item-level liveness markers so the App's spinner projection cannot keep a
   // child agent in `working` after the turn/thread has been terminalized.
+  private uncertainToolIds(threadId: string): Set<string> {
+    const rows = this.db
+      .prepare('SELECT call_id FROM tool_executions WHERE thread_id=? AND result_json IS NULL')
+      .all(threadId) as Array<{ call_id: string }>
+    return new Set(rows.map((row) => String(row.call_id)))
+  }
+
   private terminalizeStaleItems(
     itemsJson: string,
     message: string,
     terminalizeActivity = true,
     stripCompletedActivity = false,
+    uncertainCallIds: ReadonlySet<string> = new Set(),
   ): string {
     let parsed: unknown
     try {
@@ -1025,6 +1040,24 @@ export class SessionStore {
       .map((raw) => {
         if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return raw
         const item = raw as Record<string, unknown>
+        if (
+          item.type === 'dynamicToolCall' &&
+          item.status === 'inProgress' &&
+          uncertainCallIds.has(String(item.id))
+        ) {
+          // 失败的是结果确认，副作用可能已经发生；保留 success=null，禁止补造结果。
+          return {
+            ...item,
+            status: 'failed',
+            success: null,
+            contentItems: [
+              {
+                type: 'inputText',
+                text: '工具执行结果不确定：进程在确认结果前退出，可能已经产生副作用。禁止自动重放，请核对执行器状态。',
+              },
+            ],
+          }
+        }
         if (stripCompletedActivity && item.type === 'subAgentActivity') return null
         if (
           terminalizeActivity &&

@@ -245,7 +245,8 @@ test('EVENTS-004：真实 SDK 中断校验线程与回合身份，终态唯一�
       threadId: thread.id,
       input: [{ type: 'text', text: '继续取消后的会话' }],
     })
-    assert.equal((await client.completed(next.turn.id)).status, 'completed')
+    const continued = await client.completed(next.turn.id)
+    assert.equal(continued.status, 'completed', JSON.stringify(continued))
     const restored = await client.request('thread/read', {
       threadId: thread.id,
       includeTurns: true,
