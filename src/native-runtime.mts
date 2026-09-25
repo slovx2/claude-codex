@@ -37,7 +37,8 @@ if (!process.env.ANTHROPIC_BETAS) {
 import type { Query } from '@anthropic-ai/claude-agent-sdk'
 import { dynamicToolServer } from './dynamic-tools.mjs'
 import { sdkMcpServers, sdkMcpStartupEnvironment } from './mcp-config.mjs'
-import { submissionHash } from './protocol-contract.mjs'
+import { NativeTurnInput } from './native-turn-input.mjs'
+import { ProtocolError, submissionHash } from './protocol-contract.mjs'
 import { runtimePermissionOptions } from './runtime-permissions.mjs'
 import type {
   ClaudeRuntime,
@@ -63,6 +64,7 @@ interface PendingTurn {
   handlers: RuntimeHandlers
   query: Query
   abort: AbortController
+  input: NativeTurnInput
   resolved: boolean
   resolve: () => void
   reject: (error: Error) => void
@@ -99,6 +101,7 @@ interface PendingTurnResult {
   success: boolean
   resultText: string | null
   claudeSessionId: string | null
+  inputReceipt: Record<string, unknown>
 }
 
 interface WorkflowTaskState {
@@ -123,101 +126,93 @@ const WORKFLOW_JOURNAL_SETTLE_TIMEOUT_MS = 3_000
 export class NativeClaudeRuntime implements ClaudeRuntime {
   private sdk: ClaudeSdk | null = null
   private turns = new Map<string, PendingTurn>()
+  private inputs = new Map<string, NativeTurnInput>()
   private permissions = new Map<string, PendingPermission>()
 
   async runTurn(context: RuntimeTurnContext, handlers: RuntimeHandlers): Promise<void> {
-    const sdk = await this.loadSdk()
-    const abort = new AbortController()
-    return new Promise<void>((resolve, reject) => {
-      // The SDK accepts either a plain string prompt OR an AsyncIterable of
-      // SDKUserMessage envelopes. Always feed the iterable form so we have
-      // room to attach image blocks alongside the text and the door is open
-      // for mid-turn steer() calls.
-      const promptIterable = this.buildPromptIterable(context)
-      const options = this.buildOptions(sdk, context, abort)
-      if (context.dynamicTools?.length) {
-        const nativeIds = new Map<string, string[]>()
-        const hooks = options.hooks as { PreToolUse: Array<{ hooks: unknown[] }> }
-        hooks.PreToolUse.push({
-          hooks: [
-            async (input: Record<string, unknown>, toolUseId: string) => {
-              const key = `${input.tool_name}:${submissionHash(input.tool_input)}`
-              const ids = nativeIds.get(key) ?? []
-              ids.push(toolUseId)
-              nativeIds.set(key, ids)
-              return {}
-            },
-          ],
-        })
-        options.mcpServers = {
-          ...((options.mcpServers as Record<string, unknown>) ?? {}),
-          tyrs_hand: dynamicToolServer(context.dynamicTools, handlers, (name, args) => {
-            const id = nativeIds.get(`mcp__tyrs_hand__${name}:${submissionHash(args)}`)?.shift()
-            if (!id) throw new Error('缺少原生工具调用 ID，禁止执行副作用')
-            return id
-          }),
+    const input = new NativeTurnInput(this.buildPromptIterable(context))
+    this.inputs.set(context.threadId, input)
+    try {
+      const sdk = await this.loadSdk()
+      if (input.isClosed) throw new ProtocolError(-32009, '原生回合启动已取消')
+      const abort = new AbortController()
+      return await new Promise<void>((resolve, reject) => {
+        // The SDK accepts either a plain string prompt OR an AsyncIterable of
+        // SDKUserMessage envelopes. Always feed the iterable form so we have
+        // room to attach image blocks alongside the text and the door is open
+        // for mid-turn steer() calls.
+        const options = this.buildOptions(sdk, context, abort)
+        if (context.dynamicTools?.length) {
+          const nativeIds = new Map<string, string[]>()
+          const hooks = options.hooks as { PreToolUse: Array<{ hooks: unknown[] }> }
+          hooks.PreToolUse.push({
+            hooks: [
+              async (input: Record<string, unknown>, toolUseId: string) => {
+                const key = `${input.tool_name}:${submissionHash(input.tool_input)}`
+                const ids = nativeIds.get(key) ?? []
+                ids.push(toolUseId)
+                nativeIds.set(key, ids)
+                return {}
+              },
+            ],
+          })
+          options.mcpServers = {
+            ...((options.mcpServers as Record<string, unknown>) ?? {}),
+            tyrs_hand: dynamicToolServer(context.dynamicTools, handlers, (name, args) => {
+              const id = nativeIds.get(`mcp__tyrs_hand__${name}:${submissionHash(args)}`)?.shift()
+              if (!id) throw new Error('缺少原生工具调用 ID，禁止执行副作用')
+              return id
+            }),
+          }
         }
-      }
 
-      const query = sdk.query({ prompt: promptIterable, options })
-      const pending: PendingTurn = {
-        context,
-        handlers,
-        query,
-        abort,
-        resolved: false,
-        resolve,
-        reject,
-        assistantMessageId: null,
-        streamedBlocks: new Map(),
-        activeSubagents: new Set(),
-        completedWorkflowTasks: new Set(),
-        workflowToolUseIds: new Set(),
-        workflowLaunches: new Map(),
-        workflowTranscriptRoots: defaultWorkflowTranscriptRoots(process.env, context.cwd),
-        skippedWorkflowTaskIds: new Set(),
-        workflowTasks: new Map(),
-        toolStartSeen: new Set(),
-        structuredBuffer: '',
-        pendingUserMessage: null,
-        deferredResult: null,
-        workflowFailure: null,
-      }
-      this.turns.set(context.turnId, pending)
-      // Kick off the receive loop in the background. We don't await it here
-      // because runTurn() must resolve when the result message arrives — the
-      // receive loop will call resolve/reject on `pending` once the SDK ends.
-      void this.consume(pending).catch((err: unknown) => {
-        if (!pending.resolved) {
-          pending.resolved = true
-          this.turns.delete(context.turnId)
-          reject(err instanceof Error ? err : new Error(String(err)))
+        const query = sdk.query({ prompt: input, options })
+        const pending: PendingTurn = {
+          context,
+          handlers,
+          query,
+          abort,
+          input,
+          resolved: false,
+          resolve,
+          reject,
+          assistantMessageId: null,
+          streamedBlocks: new Map(),
+          activeSubagents: new Set(),
+          completedWorkflowTasks: new Set(),
+          workflowToolUseIds: new Set(),
+          workflowLaunches: new Map(),
+          workflowTranscriptRoots: defaultWorkflowTranscriptRoots(process.env, context.cwd),
+          skippedWorkflowTaskIds: new Set(),
+          workflowTasks: new Map(),
+          toolStartSeen: new Set(),
+          structuredBuffer: '',
+          pendingUserMessage: null,
+          deferredResult: null,
+          workflowFailure: null,
         }
+        this.turns.set(context.turnId, pending)
+        // Kick off the receive loop in the background. We don't await it here
+        // because runTurn() must resolve when the result message arrives — the
+        // receive loop will call resolve/reject on `pending` once the SDK ends.
+        void this.consume(pending).catch((err: unknown) => {
+          if (!pending.resolved) {
+            pending.resolved = true
+            this.turns.delete(context.turnId)
+            reject(err instanceof Error ? err : new Error(String(err)))
+          }
+        })
       })
-    })
+    } finally {
+      input.close()
+      if (this.inputs.get(context.threadId) === input) this.inputs.delete(context.threadId)
+    }
   }
 
   async steer(threadId: string, prompt: string): Promise<void> {
-    // Find an in-flight turn for this thread (we don't index by threadId so
-    // walk the map — there's usually only one active turn per thread). The
-    // SDK exposes streamInput on the Query for this purpose.
-    for (const pending of this.turns.values()) {
-      if (pending.context.threadId !== threadId) continue
-      const q = pending.query as Query & { streamInput?: (it: AsyncIterable<unknown>) => void }
-      if (typeof q.streamInput === 'function') {
-        q.streamInput(
-          (async function* () {
-            yield {
-              type: 'user',
-              message: { role: 'user', content: workflowRuntimePrompt(prompt) },
-              parent_tool_use_id: null,
-              origin: { kind: 'human' },
-            }
-          })(),
-        )
-      }
-      return
-    }
+    const input = this.inputs.get(threadId)
+    if (!input) throw new ProtocolError(-32009, '原生回合未启动或已结束')
+    input.steer(workflowRuntimePrompt(prompt))
   }
 
   async forkSession(sessionId: string, cwd: string, upToMessageId?: string): Promise<string> {
@@ -230,8 +225,10 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
   }
 
   async interrupt(threadId: string): Promise<void> {
+    this.inputs.get(threadId)?.close()
     for (const pending of this.turns.values()) {
       if (pending.context.threadId === threadId) {
+        pending.input.close()
         await this.stopWorkflowTasks(pending)
         pending.abort.abort()
         await pending.query.interrupt().catch(() => {})
@@ -240,7 +237,9 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
   }
 
   async stop(): Promise<void> {
+    for (const input of this.inputs.values()) input.close()
     for (const pending of this.turns.values()) {
+      pending.input.close()
       await this.stopWorkflowTasks(pending)
       pending.abort.abort()
     }
@@ -1240,10 +1239,16 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
   private async finishDeferredResult(pending: PendingTurn, force = false): Promise<void> {
     const deferred = pending.deferredResult
     if (!deferred || pending.resolved) return
+    if (force && deferred.success && !pending.input.consumedBy(deferred.inputReceipt)) {
+      deferred.success = false
+      deferred.resultText = 'SDK 退出前未确认追加指令，执行结果不确定，请读取历史对账'
+    }
+    if (!force && deferred.success && !pending.input.consumedBy(deferred.inputReceipt)) return
     if (!force && deferred.success && this.hasPendingWorkflowTasks(pending)) return
 
     pending.deferredResult = null
     pending.resolved = true
+    pending.input.close()
     this.turns.delete(pending.context.turnId)
     try {
       await pending.handlers.onEvent({
@@ -1266,7 +1271,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     pending: PendingTurn,
     message: Record<string, unknown>,
   ): Promise<void> {
-    if (pending.deferredResult || pending.resolved) return
+    if (pending.resolved) return
     const subtype = String(message.subtype ?? '')
     const success = subtype === 'success' && !message.is_error && pending.workflowFailure == null
     const resultText =
@@ -1289,7 +1294,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     if (pending.context.outputFormat && pending.structuredBuffer) {
       await pending.handlers.onEvent({ type: 'text_delta', delta: pending.structuredBuffer.trim() })
     }
-    pending.deferredResult = { success, resultText, claudeSessionId }
+    pending.deferredResult = { success, resultText, claudeSessionId, inputReceipt: message }
     if (!success) await this.stopWorkflowTasks(pending)
     await this.finishDeferredResult(pending)
   }

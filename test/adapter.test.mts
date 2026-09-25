@@ -4538,7 +4538,16 @@ test('thread resume, fork, and interrupt lifecycle methods are stable', async ()
     assert.equal(fork.result.thread.forkedFromId, threadId)
     assert.notEqual(fork.result.thread.sessionId, resume.result.thread.sessionId)
 
-    proc.stdin.write(json({ id: 5, method: 'turn/interrupt', params: { threadId } }))
+    proc.stdin.write(
+      json({
+        id: 5,
+        method: 'turn/interrupt',
+        params: {
+          threadId,
+          turnId: resume.result.thread.turns[0].id,
+        },
+      }),
+    )
     const interrupt = await reader.nextResponse(5)
     assert.deepEqual(interrupt.result, {})
   } finally {

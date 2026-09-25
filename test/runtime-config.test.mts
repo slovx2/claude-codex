@@ -23,6 +23,7 @@ import {
   sanitizeAgentapiTerminalContent,
 } from '../src/http-agent-runtime.mjs'
 import { NativeClaudeRuntime, sdkResumeSessionId } from '../src/native-runtime.mjs'
+import { NativeTurnInput } from '../src/native-turn-input.mjs'
 import { resolveRuntimeConfig } from '../src/runtime-config.mjs'
 import { buildSystemPromptAddendum } from '../src/server-helpers.mjs'
 import type { RuntimeTurnContext } from '../src/types.mjs'
@@ -527,6 +528,7 @@ test('native SDK parent result does not cap workflow runtime at three seconds', 
   let resolved = false
   const pending = {
     context: nativeTurnContext({ turnId: 'parent-result-workflow-turn' }),
+    input: new NativeTurnInput((async function* () {})()),
     activeSubagents: new Set<string>(),
     completedWorkflowTasks: new Set<string>(),
     workflowToolUseIds: new Set(['parent-result-workflow-launch']),

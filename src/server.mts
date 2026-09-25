@@ -202,6 +202,15 @@ export class CodexClaudeAppServer {
   private activePeerByThread = new Map<string, RpcPeer>()
   private peerFeatures = new WeakMap<RpcPeer, PeerFeatures>()
   private activeTurnByThread = new Map<string, string>()
+  private interruptingByThread = new Map<string, Promise<void>>()
+  private activeItemsByTurn = new Map<string, Set<string>>()
+  private runtimeReadyByTurn = new Map<
+    string,
+    {
+      ready: Promise<boolean>
+      resolve: (started: boolean) => void
+    }
+  >()
   private nativeMutations = new Set<string>()
   private subagentStateByTurn = new Map<string, ActiveSubagentState>()
   private fuzzySessions = new Map<string, { roots: string[] }>()
@@ -1586,7 +1595,7 @@ export class CodexClaudeAppServer {
       runtimeBackend: thread.runtimeBackend,
       purpose: params.outputSchema == null ? 'normal' : 'summary',
     })
-    this.activeTurnByThread.set(threadId, turnId)
+    this.markActiveTurn(threadId, turnId)
     this.setThreadStatus(peer, threadId, { type: 'active', activeFlags: [] })
     // The review/start RESPONSE carries the synthesized userMessage item (the
     // real app-server's build_review_turn does the same, with itemsView
@@ -1656,7 +1665,7 @@ export class CodexClaudeAppServer {
       runtimeBackend: thread.runtimeBackend,
       purpose: params.outputSchema == null ? 'normal' : 'summary',
     })
-    this.activeTurnByThread.set(threadId, turnId)
+    this.markActiveTurn(threadId, turnId)
     this.setThreadStatus(peer, threadId, { type: 'active', activeFlags: [] })
     setImmediate(() => {
       this.notify(peer, {
@@ -1803,6 +1812,7 @@ export class CodexClaudeAppServer {
     }
     if (
       this.activeTurnByThread.has(threadId) ||
+      this.interruptingByThread.has(threadId) ||
       this.store.listTurns(threadId).some((turn) => turn.status === 'inProgress')
     )
       throw new ProtocolError(-32009, '会话已有活动或结果尚未确认的 Turn')
@@ -1888,7 +1898,7 @@ export class CodexClaudeAppServer {
       runtimeBackend: thread.runtimeBackend,
       purpose: params.outputSchema == null ? 'normal' : 'summary',
     })
-    this.activeTurnByThread.set(threadId, turnId)
+    this.markActiveTurn(threadId, turnId)
     this.setThreadStatus(peer, threadId, { type: 'active', activeFlags: [] })
     const publicTurn = this.toLifecycleTurn(turn)
 
@@ -2303,6 +2313,8 @@ export class CodexClaudeAppServer {
       acceptRuntimeEvents &&
       this.store.getTurn(turn.id)?.status === 'inProgress' &&
       this.activeTurnByThread.get(thread.id) === turn.id
+    if (!turnIsActive()) return
+    this.runtimeReadyByTurn.get(turn.id)?.resolve(true)
     const runtimeTurn = this.runtime.runTurn(
       {
         threadId: thread.id,
@@ -3643,10 +3655,23 @@ export class CodexClaudeAppServer {
   }
 
   private async turnInterrupt(peer: RpcPeer, params: Record<string, unknown>): Promise<unknown> {
-    const threadId = stringOr(params.threadId, '')
-    const requestedTurnId = stringOr(params.turnId, '')
-    this.activePeerByThread.set(threadId, peer)
+    const threadId = requiredString(params.threadId, 'threadId')
+    const requestedTurnId = requiredString(params.turnId, 'turnId')
+    if (!this.store.getThread(threadId)) throw new ProtocolError(-32602, '会话不存在')
+    const requested = this.store.getTurn(requestedTurnId)
+    if (requested && requested.threadId !== threadId)
+      throw new ProtocolError(-32602, '回合不属于指定会话')
     const activeTurnId = this.activeTurnByThread.get(threadId)
+    if (activeTurnId && activeTurnId !== requestedTurnId)
+      throw new ProtocolError(-32009, '指定回合与当前活动回合不一致')
+    if (!requested) throw new ProtocolError(-32602, '指定回合不存在')
+    const stopping = this.interruptingByThread.get(threadId)
+    if (stopping) {
+      await stopping
+      return {}
+    }
+    if (requested.status !== 'inProgress') return {}
+    this.activePeerByThread.set(threadId, peer)
     const turnId = activeTurnId || requestedTurnId
     if (turnId) {
       const turn = this.store.getTurn(turnId)
@@ -3670,20 +3695,27 @@ export class CodexClaudeAppServer {
         })
       }
     }
-    this.clearActiveTurn(threadId)
-    this.setThreadStatus(peer, threadId, { type: 'idle' })
+    this.runtimeReadyByTurn.get(turnId)?.resolve(false)
     this.pendingInteractions.cancelThread(threadId)
     // Persist the terminal state before asking the SDK to abort. A few SDK
     // versions deliver one or two buffered tool events during interrupt; the
     // runRuntimeTurn guard now rejects them because the turn is no longer
     // active, so they cannot create an orphan child after this point.
-    const interrupting = this.runtime.interrupt(threadId)
+    // 终态先落库，执行权仍保留到 SDK 真正停止，防止旧 interrupt 命中新回合。
+    // 停止失败时保留屏障，明确拒绝新提交；重启运行时后才能恢复。
+    const interrupting = Promise.resolve().then(() => this.runtime.interrupt(threadId))
+    this.interruptingByThread.set(threadId, interrupting)
     await interrupting
+    this.interruptingByThread.delete(threadId)
+    this.clearActiveTurn(threadId)
+    this.setThreadStatus(peer, threadId, { type: 'idle' })
     return {}
   }
 
   private async turnSteer(_peer: RpcPeer, params: Record<string, unknown>): Promise<unknown> {
-    const threadId = stringOr(params.threadId, '')
+    const threadId = requiredString(params.threadId, 'threadId')
+    const expectedTurnId = requiredString(params.expectedTurnId, 'expectedTurnId')
+    if (!this.store.getThread(threadId)) throw new ProtocolError(-32602, '会话不存在')
     const messageId =
       params.clientUserMessageId == null
         ? null
@@ -3693,12 +3725,22 @@ export class CodexClaudeAppServer {
       const submitted = this.store.submittedTurn(threadId, messageId, hash)
       if (submitted) return { turnId: submitted.id }
     }
-    const expectedTurnId = stringOr(params.expectedTurnId, '')
     const activeTurnId = this.activeTurnByThread.get(threadId)
-    if (!activeTurnId) throw new Error(`thread has no active turn: ${threadId}`)
-    if (expectedTurnId && expectedTurnId !== activeTurnId) {
-      throw new Error(`active turn mismatch: expected ${expectedTurnId}, got ${activeTurnId}`)
+    if (
+      !activeTurnId ||
+      expectedTurnId !== activeTurnId ||
+      this.store.getTurn(activeTurnId)?.status !== 'inProgress'
+    )
+      throw new ProtocolError(-32009, '指定回合与当前活动回合不一致')
+    const startup = this.runtimeReadyByTurn.get(activeTurnId)
+    if (startup && !(await startup.ready)) throw new ProtocolError(-32009, '回合未启动便已终结')
+    // 等待启动时另一端可能提交相同消息或取消回合，落库前再次核对。
+    if (messageId) {
+      const submitted = this.store.submittedTurn(threadId, messageId, hash)
+      if (submitted) return { turnId: submitted.id }
     }
+    if (this.activeTurnByThread.get(threadId) !== activeTurnId)
+      throw new ProtocolError(-32009, '回合已终结')
     const input = Array.isArray(params.input) ? (params.input as UserInput[]) : []
     const prompt = textFromInput(input)
     // The steered message is retained on the turn for history (thread/read), but
@@ -4396,6 +4438,22 @@ export class CodexClaudeAppServer {
     // already have closed, while persistence still needs to settle child and
     // parent state without throwing on a broken pipe.
     if (this.stopped) return
+    const params = asRecord(notification.params)
+    const turnId = stringOr(params.turnId, '')
+    const itemId = stringOr(asRecord(params.item).id, '')
+    if (notification.method === 'item/started' && turnId && itemId) {
+      const items = this.activeItemsByTurn.get(turnId) ?? new Set<string>()
+      items.add(itemId)
+      this.activeItemsByTurn.set(turnId, items)
+    } else if (notification.method === 'item/completed') {
+      this.activeItemsByTurn.get(turnId)?.delete(itemId)
+    } else if (notification.method === 'turn/completed') {
+      const turn = asRecord(params.turn)
+      const completedId = stringOr(turn.id, '')
+      if (turn.status === 'interrupted' || turn.status === 'failed')
+        this.finishAbortedItems(peer, stringOr(params.threadId, ''), completedId)
+      this.activeItemsByTurn.delete(completedId)
+    }
     const target = this.peerForParams(peer, notification.params)
     debugLog('rpc.notify', {
       peerId: target.id,
@@ -4404,6 +4462,33 @@ export class CodexClaudeAppServer {
       params: summarizeRpcParams(notification.method, notification.params),
     })
     target.send({ jsonrpc: '2.0', method: notification.method, params: notification.params })
+  }
+
+  private finishAbortedItems(peer: RpcPeer, threadId: string, turnId: string): void {
+    const active = this.activeItemsByTurn.get(turnId)
+    const turn = this.store.getTurn(turnId)
+    if (!active || !turn) return
+    const message = '回合已终止；未确认的工具结果不能重放'
+    for (const item of turn.items) {
+      if (!active.has(item.id)) continue
+      let completed: ThreadItem = item
+      if (item.type === 'dynamicToolCall')
+        completed = {
+          ...item,
+          status: 'failed',
+          success: false,
+          contentItems: [{ type: 'inputText', text: message }],
+        }
+      else if (item.type === 'mcpToolCall')
+        completed = { ...item, status: 'failed', error: { message } }
+      else if ('status' in item && item.status === 'inProgress')
+        completed = { ...item, status: 'failed' }
+      this.store.updateItem(turnId, item.id, () => completed)
+      this.notify(peer, {
+        method: 'item/completed',
+        params: { threadId, turnId, item: completed, completedAtMs: nowMillis() },
+      })
+    }
   }
 
   private notifyThread(threadId: string, notification: { method: string; params: unknown }): void {
@@ -4441,6 +4526,8 @@ export class CodexClaudeAppServer {
       this.store.updateThreadStatus(threadId, { type: 'idle' })
     }
     this.activeTurnByThread.clear()
+    for (const startup of this.runtimeReadyByTurn.values()) startup.resolve(false)
+    this.runtimeReadyByTurn.clear()
   }
 
   private finalizeActiveSubagentsForShutdown(message: string): void {
@@ -4467,7 +4554,21 @@ export class CodexClaudeAppServer {
     }
   }
 
+  private markActiveTurn(threadId: string, turnId: string): void {
+    let resolve!: (started: boolean) => void
+    const ready = new Promise<boolean>((done) => {
+      resolve = done
+    })
+    this.runtimeReadyByTurn.set(turnId, { ready, resolve })
+    this.activeTurnByThread.set(threadId, turnId)
+  }
+
   private clearActiveTurn(threadId: string): void {
+    const turnId = this.activeTurnByThread.get(threadId)
+    if (turnId) {
+      this.runtimeReadyByTurn.get(turnId)?.resolve(false)
+      this.runtimeReadyByTurn.delete(turnId)
+    }
     const existed = this.activeTurnByThread.delete(threadId)
     if (existed && this.activeTurnByThread.size === 0) this.idleCheckHandler?.()
   }
