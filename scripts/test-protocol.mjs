@@ -63,6 +63,7 @@ const result = spawnSync(
     'dist/test/native-interactions.test.mjs',
     'dist/test/native-plan.test.mjs',
     'dist/test/native-permission-policy.test.mjs',
+    'dist/test/native-cli-failure.test.mjs',
     'dist/test/native-mcp.test.mjs',
     'dist/test/native-mcp-management.test.mjs',
     'dist/test/native-mcp-elicitation.test.mjs',

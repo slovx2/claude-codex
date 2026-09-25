@@ -1,6 +1,5 @@
 import { realpathSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import type { RuntimeTurnContext } from './types.mjs'
 
 const readTools = new Set([
@@ -17,11 +16,8 @@ const readTools = new Set([
 const fileTools = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
 
 export function planDirectory(context: RuntimeTurnContext): string {
-  return join(
-    process.env.CLAUDE_CODEX_HOME ?? join(homedir(), '.claude-codex'),
-    'plans',
-    context.threadId,
-  )
+  // SDK plansDirectory 只接受项目内目录；每个线程仍有独立的计划命名空间。
+  return resolve(context.cwd, '.claude', 'plans', 'tyrs-hand', context.threadId)
 }
 
 export function isPlanFile(
@@ -30,10 +26,15 @@ export function isPlanFile(
   input: Record<string, unknown>,
 ): boolean {
   if (!context.planMode || !fileTools.has(name) || typeof input.file_path !== 'string') return false
-  const child = relative(
-    resolvedTarget(planDirectory(context)),
-    resolvedTarget(resolve(context.cwd, input.file_path)),
+  const root = resolvedTarget(planDirectory(context))
+  const rootWithinProject = relative(resolvedTarget(context.cwd), root)
+  if (
+    rootWithinProject === '..' ||
+    rootWithinProject.startsWith('../') ||
+    isAbsolute(rootWithinProject)
   )
+    return false
+  const child = relative(root, resolvedTarget(resolve(context.cwd, input.file_path)))
   return child.length > 0 && child !== '..' && !child.startsWith('../') && !isAbsolute(child)
 }
 

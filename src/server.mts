@@ -1636,6 +1636,7 @@ export class CodexClaudeAppServer {
       }).catch((error) => {
         const completed =
           this.store.completeTurn(turnId, 'failed', { message: error.message }) ?? turn
+        this.pendingInteractions.cancelThread(threadId)
         recordRunEvent('turn.failed', {
           threadId,
           turnId,
@@ -1948,6 +1949,7 @@ export class CodexClaudeAppServer {
         if (current && current.status !== 'inProgress') return
         const completed =
           this.store.completeTurn(turnId, 'failed', { message: error.message }) ?? turn
+        this.pendingInteractions.cancelThread(threadId)
         this.notify(peer, {
           method: 'error',
           params: { threadId, turnId, willRetry: false, error: { message: error.message } },
@@ -2428,11 +2430,6 @@ export class CodexClaudeAppServer {
             // 未收到确定结果仍保留执行意图，禁止后续重放副作用。
             finish({ success: false, contentItems: [{ type: 'inputText', text: String(error) }] })
             throw error
-          } finally {
-            this.notifyThread(thread.id, {
-              method: 'serverRequest/resolved',
-              params: { threadId: thread.id, requestId },
-            })
           }
         },
         onEvent: async (event) => {
@@ -3185,10 +3182,6 @@ export class CodexClaudeAppServer {
             if (!turnIsActive() || signal.aborted) return { action: 'cancel' }
             return elicitationResponse(request, response)
           } finally {
-            this.notifyThread(thread.id, {
-              method: 'serverRequest/resolved',
-              params: { threadId: thread.id, requestId },
-            })
             if (turnIsActive())
               this.setThreadStatus(peer, thread.id, { type: 'active', activeFlags: [] })
           }
@@ -3331,10 +3324,8 @@ export class CodexClaudeAppServer {
           message,
         )
         this.subagentStateByTurn.delete(turn.id)
-        // Do not await the SDK interrupt here: some SDK versions wait for the
-        // same result that has just timed out. The server catch path will
-        // terminalize the parent turn immediately and late events are guarded.
-        void this.runtime.interrupt(thread.id).catch(() => {})
+        // 原生中断包含有界强制终止；必须等 CLI 停止后才能释放用户审批。
+        await this.runtime.interrupt(thread.id)
       }
       throw new Error(message)
     }
@@ -3712,7 +3703,6 @@ export class CodexClaudeAppServer {
     try {
       response = await this.sendServerRequest(peer, method, requestId, params)
     } finally {
-      this.notify(peer, { method: 'serverRequest/resolved', params: { threadId, requestId } })
       if (!this.stopped && this.activeTurnByThread.get(threadId) === turnId)
         this.setThreadStatus(peer, threadId, { type: 'active', activeFlags: [] })
     }
@@ -3742,12 +3732,12 @@ export class CodexClaudeAppServer {
           }
     })
     const params = { threadId, turnId, itemId, isBlocking: true, questions: normalized }
-    let response: unknown
-    try {
-      response = await this.sendServerRequest(peer, 'item/tool/requestUserInput', requestId, params)
-    } finally {
-      this.notify(peer, { method: 'serverRequest/resolved', params: { threadId, requestId } })
-    }
+    const response = await this.sendServerRequest(
+      peer,
+      'item/tool/requestUserInput',
+      requestId,
+      params,
+    )
     return normalizeUserInputAnswers(response, normalized)
   }
 
@@ -3889,19 +3879,15 @@ export class CodexClaudeAppServer {
         if (policy && typeof policy === 'object' && !allowsApproval(policy, 'mcp_elicitations'))
           return { action: 'decline' }
         const requestId = newId()
-        try {
-          const response = await this.sendServerRequest(
-            peer,
-            'mcpServer/elicitation/request',
-            requestId,
-            elicitationParams(request, threadId, null),
-            signal,
-          )
-          signal.throwIfAborted()
-          return elicitationResponse(request, response)
-        } finally {
-          this.notify(peer, { method: 'serverRequest/resolved', params: { threadId, requestId } })
-        }
+        const response = await this.sendServerRequest(
+          peer,
+          'mcpServer/elicitation/request',
+          requestId,
+          elicitationParams(request, threadId, null),
+          signal,
+        )
+        signal.throwIfAborted()
+        return elicitationResponse(request, response)
       },
     }
   }
@@ -4737,7 +4723,13 @@ export class CodexClaudeAppServer {
     signal?: AbortSignal,
   ): Promise<unknown> {
     const target = this.peerForParams(peer, params)
-    return this.pendingInteractions.request(target, method, id, params, signal)
+    const threadId = stringOr(asRecord(params).threadId, '')
+    return this.pendingInteractions.request(target, method, id, params, signal, () => {
+      this.notify(target, {
+        method: 'serverRequest/resolved',
+        params: { threadId, requestId: id },
+      })
+    })
   }
 
   private completeActiveTurns(status: 'interrupted' | 'failed', error: unknown): void {

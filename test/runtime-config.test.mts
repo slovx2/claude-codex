@@ -14,7 +14,7 @@ import {
 } from 'node:fs/promises'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import test from 'node:test'
 import { ClaudePTranscriptRuntime } from '../src/claude-p-runtime.mjs'
 import {
@@ -135,7 +135,7 @@ test('native SDK runtime maps manual /workflows prompts to the human workflow tr
   const buildOptions = Reflect.get(runtime, 'buildOptions')
   const options = buildOptions.call(runtime, {}, context, new AbortController())
   assert.deepEqual(options.settings, {
-    plansDirectory: planDirectory(context),
+    plansDirectory: relative(context.cwd, planDirectory(context)),
     enableWorkflows: true,
     workflowKeywordTriggerEnabled: true,
   })

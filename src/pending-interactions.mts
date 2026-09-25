@@ -24,6 +24,7 @@ export class PendingInteractions {
     id: string,
     params: unknown,
     signal?: AbortSignal,
+    onFinished?: () => void,
   ): Promise<unknown> {
     if (signal?.aborted) return Promise.reject(new ProtocolError(-32010, '交互请求已取消'))
     const key = JSON.stringify([peer.id, id])
@@ -34,6 +35,15 @@ export class PendingInteractions {
         if (!this.pending.delete(key)) return
         clearTimeout(timer)
         signal?.removeEventListener('abort', cancelled)
+        // 在唤醒等待者前发送结束事件，崩溃和取消也使用同一个完成路径。
+        try {
+          onFinished?.()
+        } catch (notificationError) {
+          error ??=
+            notificationError instanceof Error
+              ? notificationError
+              : new Error(String(notificationError))
+        }
         if (error) reject(error)
         else if (response?.error)
           reject(new ProtocolError(response.error.code, response.error.message))

@@ -7,7 +7,8 @@ import {
   realpathSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 // Extended cache TTL for 1-hour prompt caching
 if (!process.env.ANTHROPIC_BETAS) {
@@ -46,6 +47,7 @@ import { type ApprovalPolicy, allowsApproval, toolApprovalFlow } from './approva
 import { dynamicToolServer } from './dynamic-tools.mjs'
 import { sdkMcpStartupEnvironment } from './mcp-config.mjs'
 import { NativeMcpBridge } from './native-mcp-bridge.mjs'
+import { NativeProcess, succeedsWithin } from './native-process.mjs'
 import { NativeTurnInput } from './native-turn-input.mjs'
 import { ProtocolError, submissionHash } from './protocol-contract.mjs'
 import { isPlanFile, planDirectory, runtimePermissionOptions } from './runtime-permissions.mjs'
@@ -139,8 +141,11 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
   private permissions = new Map<string, PendingPermission>()
   private aborts = new Map<string, AbortController>()
   private cleanup = new Map<string, Promise<void>>()
+  private processes = new Map<string, NativeProcess>()
 
   async runTurn(context: RuntimeTurnContext, handlers: RuntimeHandlers): Promise<void> {
+    if (this.processes.has(context.threadId))
+      throw new ProtocolError(-32009, '上一个 Claude CLI 尚未确认退出，禁止启动新回合')
     let cleaned!: () => void
     const cleanup = new Promise<void>((resolve) => {
       cleaned = resolve
@@ -149,12 +154,15 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     const input = new NativeTurnInput(this.buildPromptIterable(context))
     const abort = new AbortController()
     const mcp = new NativeMcpBridge()
+    const nativeProcess = new NativeProcess(context.threadId, context.turnId)
+    this.processes.set(context.threadId, nativeProcess)
     this.inputs.set(context.threadId, input)
     this.aborts.set(context.threadId, abort)
     try {
       const sdk = await this.loadSdk()
       if (input.isClosed) throw new ProtocolError(-32009, '原生回合启动已取消')
       const options = this.buildOptions(sdk, context, abort)
+      options.spawnClaudeCodeProcess = nativeProcess.spawn.bind(nativeProcess)
       options.mcpServers = await mcp.connect(
         context.mcpServers,
         context.cwd,
@@ -232,9 +240,17 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       input.close()
       if (this.inputs.get(context.threadId) === input) this.inputs.delete(context.threadId)
       if (this.aborts.get(context.threadId) === abort) this.aborts.delete(context.threadId)
+      let stopped = false
       try {
-        await mcp.close()
+        try {
+          await mcp.close()
+        } finally {
+          if (!(await nativeProcess.wait(3_000))) await nativeProcess.terminate()
+          stopped = true
+        }
       } finally {
+        if (stopped && this.processes.get(context.threadId) === nativeProcess)
+          this.processes.delete(context.threadId)
         if (this.cleanup.get(context.threadId) === cleanup) this.cleanup.delete(context.threadId)
         cleaned()
       }
@@ -261,15 +277,20 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     const pending = [...this.turns.values()].find((turn) => turn.context.threadId === threadId)
     // SDK 的 abort 先关闭 stdin，CLI 仍有退出宽限期；此时释放 MCP
     // 会把错误工具结果送回尚未中断的模型循环。先等待 CLI 确认中断。
-    if (pending) await pending.query.interrupt()
+    const nativeProcess = this.processes.get(threadId)
+    if (pending && !(await succeedsWithin(pending.query.interrupt(), 1_500)))
+      await nativeProcess?.terminate()
     this.inputs.get(threadId)?.close()
     this.aborts.get(threadId)?.abort()
     if (pending) await this.stopWorkflowTasks(pending)
+    if (nativeProcess && !(await nativeProcess.wait(2_500))) await nativeProcess.terminate()
     await cleanup
+    if (this.processes.get(threadId) === nativeProcess) this.processes.delete(threadId)
   }
 
   async stop(): Promise<void> {
-    await Promise.all([...this.cleanup.keys()].map((threadId) => this.interrupt(threadId)))
+    const threads = new Set([...this.cleanup.keys(), ...this.processes.keys()])
+    await Promise.all([...threads].map((threadId) => this.interrupt(threadId)))
     this.turns.clear()
     this.permissions.clear()
   }
@@ -342,7 +363,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         CLAUDE_CODE_MAX_RETRIES: '0',
       },
       ...runtimePermissionOptions(context),
-      settings: { plansDirectory: planDirectory(context) },
+      settings: { plansDirectory: relative(context.cwd, planDirectory(context)) },
       disallowedTools: ['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup'],
       stderr: (data: string) => process.stderr.write(data),
       onElicitation: (async (request, { signal }) => {
@@ -375,6 +396,44 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     // 完全访问由回调授权，支持 root 部署且保留计划确认和用户提问。
     const mode = derivePermissionMode(context.approvalPolicy, context.sandboxMode, context.planMode)
     opts.permissionMode = mode
+    const permissionHooks = opts.hooks as { PreToolUse: Array<{ hooks: unknown[] }> }
+    permissionHooks.PreToolUse.push({
+      hooks: [
+        async (event: Record<string, unknown>, toolUseId: string) => {
+          const sessionId = String(event.session_id ?? '')
+          const deadline = Date.now() + 3_000
+          try {
+            do {
+              abort.signal.throwIfAborted()
+              const messages =
+                typeof event.agent_id === 'string'
+                  ? await sdk.getSubagentMessages(sessionId, event.agent_id, { dir: context.cwd })
+                  : await sdk.getSessionMessages(sessionId, { dir: context.cwd })
+              if (
+                messages.some((entry) => {
+                  const content = (entry.message as { content?: unknown })?.content
+                  return (
+                    Array.isArray(content) &&
+                    content.some((block) => block?.type === 'tool_use' && block.id === toolUseId)
+                  )
+                })
+              )
+                return {}
+              await delay(25, undefined, { signal: abort.signal })
+            } while (Date.now() < deadline)
+          } catch {
+            // Hook 抛错只会被 CLI 记录，必须显式 deny 才能阻止工具。
+          }
+          return {
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'deny',
+              permissionDecisionReason: '原生工具意图未能确认落盘或回合已取消，禁止执行。',
+            },
+          }
+        },
+      ],
+    })
 
     if (parseWorkflowCommand(context.prompt)?.type === 'run') {
       opts.settings = {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { MockLLM, type ModelRequest } from './fixtures/mock-llm.mjs'
 import { ProtocolClient } from './fixtures/protocol-client.mjs'
@@ -21,11 +21,20 @@ const tool = (name: string, id: string, input: Record<string, unknown>) => ({
   input,
 })
 
+function promptText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) return value.map(promptText).join('\n')
+  if (value && typeof value === 'object') return Object.values(value).map(promptText).join('\n')
+  return ''
+}
+
 test('PLAN-002：AI 进入计划、原生计划文件、重启恢复和显式退出', { timeout: 60_000 }, async () => {
   const home = await mkdtemp(join(tmpdir(), 'native-enter-plan-'))
   const model = new MockLLM()
   const url = await model.start()
   let client = await ProtocolClient.start(home, url)
+  const canonicalHome = await realpath(home)
+  let nativePlanPath = ''
   try {
     const modes = await client.request('collaborationMode/list')
     assert.deepEqual(
@@ -35,9 +44,17 @@ test('PLAN-002：AI 进入计划、原生计划文件、重启恢复和显式退
     model.enqueue(() => [tool('EnterPlanMode', 'toolu_enter', {})])
     model.enqueue((request) => {
       assert.notEqual(result(request, 'toolu_enter').is_error, true)
+      const prompt = promptText(request.messages)
+      const location = /create your plan at ([^\n]+?) using the Write tool/.exec(prompt)
+      assert.ok(location, 'CLI 必须向模型提供真实计划路径')
+      nativePlanPath = location[1]!
+      assert.equal(
+        dirname(nativePlanPath),
+        join(canonicalHome, '.claude', 'plans', 'tyrs-hand', threadId),
+      )
       return [
         tool('Write', 'toolu_plan_file', {
-          file_path: join(home, 'adapter', 'plans', threadId, 'test-plan.md'),
+          file_path: nativePlanPath,
           content: '# 可执行计划\n1. 写入结果\n2. 验证文件',
         }),
       ]
@@ -56,6 +73,8 @@ test('PLAN-002：AI 进入计划、原生计划文件、重启恢复和显式退
       input: [{ type: 'text', text: '先进入计划模式' }],
     })
     assert.equal((await client.completed(first.turn.id)).status, 'completed')
+    assert.match(await readFile(nativePlanPath, 'utf8'), /可执行计划/)
+    assert.doesNotMatch(client.stderr, /plansDirectory must be within project root/)
     assert.ok(
       client.trace.some(
         (x) =>
@@ -111,6 +130,51 @@ test('PLAN-002：AI 进入计划、原生计划文件、重启恢复和显式退
     await client.close()
     await model.close()
     await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
+
+test('PLAN-002：计划目录符号链接不能授权项目外写入', { timeout: 30_000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'native-plan-symlink-'))
+  const outside = await mkdtemp(join(tmpdir(), 'native-plan-outside-'))
+  const model = new MockLLM()
+  const client = await ProtocolClient.start(home, await model.start())
+  try {
+    await mkdir(join(home, '.claude', 'plans'), { recursive: true })
+    await symlink(outside, join(home, '.claude', 'plans', 'tyrs-hand'), 'dir')
+    const { thread } = await client.request('thread/start', {
+      cwd: home,
+      permissions: ':danger-full-access',
+    })
+    model.enqueue(() => [
+      tool('Write', 'toolu_escape', {
+        file_path: join(home, '.claude', 'plans', 'tyrs-hand', thread.id, 'escape.md'),
+        content: '禁止外逃',
+      }),
+    ])
+    model.enqueue((request) => {
+      assert.equal(result(request, 'toolu_escape').is_error, true)
+      return [{ type: 'text', text: '计划目录不安全，未写入' }]
+    })
+    const { turn } = await client.request('turn/start', {
+      threadId: thread.id,
+      input: [{ type: 'text', text: '仅制定计划' }],
+      collaborationMode: {
+        mode: 'plan',
+        settings: {
+          model: 'claude-sonnet-4-6',
+          reasoning_effort: null,
+          developer_instructions: null,
+        },
+      },
+    })
+    assert.equal((await client.completed(turn.id)).status, 'completed')
+    await assert.rejects(access(join(outside, thread.id, 'escape.md')))
+    model.assertConsumed()
+  } finally {
+    await client.close()
+    await model.close()
+    await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    await rm(outside, { recursive: true, force: true })
   }
 })
 
