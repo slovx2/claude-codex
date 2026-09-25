@@ -3,6 +3,7 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import type { CatalogCursor } from './catalog-pagination.mjs'
 import { ProtocolError, type ThreadRuntimeSettings } from './protocol-contract.mjs'
+import type { ThreadGoal } from './thread-goals.mjs'
 import type {
   ThreadItem,
   ThreadRecord,
@@ -50,6 +51,9 @@ export class SessionStore {
       CREATE TABLE IF NOT EXISTS tool_executions (
         thread_id TEXT NOT NULL, call_id TEXT NOT NULL, payload_hash TEXT NOT NULL,
         result_json TEXT, PRIMARY KEY(thread_id, call_id)
+      );
+      CREATE TABLE IF NOT EXISTS thread_goals (
+        thread_id TEXT PRIMARY KEY, goal_json TEXT NOT NULL
       );
     `)
     this.db.exec(`
@@ -676,6 +680,24 @@ export class SessionStore {
     return row ? JSON.parse(row.settings_json) : {}
   }
 
+  threadGoal(threadId: string): ThreadGoal | null {
+    const row = this.db
+      .prepare('SELECT goal_json FROM thread_goals WHERE thread_id=?')
+      .get(threadId)
+    return row ? JSON.parse(row.goal_json) : null
+  }
+
+  saveThreadGoal(goal: ThreadGoal): void {
+    this.db
+      .prepare(`INSERT INTO thread_goals(thread_id,goal_json) VALUES (?,?)
+      ON CONFLICT(thread_id) DO UPDATE SET goal_json=excluded.goal_json`)
+      .run(goal.threadId, JSON.stringify(goal))
+  }
+
+  clearThreadGoal(threadId: string): boolean {
+    return this.db.prepare('DELETE FROM thread_goals WHERE thread_id=?').run(threadId).changes > 0
+  }
+
   reserveTool(threadId: string, callId: string, hash: string): { result: unknown } | null {
     const row = this.db
       .prepare('SELECT * FROM tool_executions WHERE thread_id=? AND call_id=?')
@@ -764,7 +786,13 @@ export class SessionStore {
           'DELETE FROM native_turn_boundaries WHERE turn_id IN (SELECT id FROM turns WHERE thread_id=?)',
         )
         .run(threadId)
-      for (const table of ['turns', 'submissions', 'thread_runtime_settings', 'tool_executions'])
+      for (const table of [
+        'turns',
+        'submissions',
+        'thread_runtime_settings',
+        'tool_executions',
+        'thread_goals',
+      ])
         this.db.prepare(`DELETE FROM ${table} WHERE thread_id=?`).run(threadId)
       this.db.prepare('DELETE FROM threads WHERE id=?').run(threadId)
       this.db.exec('COMMIT')

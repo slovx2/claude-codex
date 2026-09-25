@@ -93,6 +93,7 @@ import {
   wrapMcpToolResult,
 } from './server-helpers.mjs'
 import { PINNED_SECTION_ID, type SessionStore } from './store.mjs'
+import { patchThreadGoal } from './thread-goals.mjs'
 import { patchGitInfo } from './thread-metadata.mjs'
 import type {
   ClaudeRuntime,
@@ -208,7 +209,6 @@ export class CodexClaudeAppServer {
   private commandProcesses = new Map<string, ChildProcess>()
   private readonly processes = new ProcessRpc()
   private readonly filesystem = new FilesystemRpc()
-  private goals = new Map<string, Record<string, unknown>>()
   private elicitationCounts = new Map<string, number>()
   private tokenUsageByThread = new Map<string, TokenUsageBreakdown>()
   private configModel = defaultSelectableModelId()
@@ -918,6 +918,8 @@ export class CodexClaudeAppServer {
     }
     this.store.upsertThread(thread)
     this.store.saveThreadSettings(id, this.store.threadSettings(parentId))
+    const parentGoal = this.store.threadGoal(parentId)
+    if (parentGoal) this.store.saveThreadGoal({ ...parentGoal, threadId: id })
     this.saveRuntimeSettings(id, params)
     for (const turn of this.store.listTurns(parentId)) {
       const cloned = { ...turn, id: newId(), threadId: id }
@@ -1185,12 +1187,11 @@ export class CodexClaudeAppServer {
   }
 
   // Drops per-thread in-memory state (session-scoped command approvals, token
-  // usage tallies, goals, elicitation counts) so an archived thread does not
+  // usage tallies, elicitation counts) so an archived thread does not
   // leak entries for the lifetime of the process.
   private clearThreadState(threadId: string): void {
     this.commandSessionAllow.delete(threadId)
     this.tokenUsageByThread.delete(threadId)
-    this.goals.delete(threadId)
     this.elicitationCounts.delete(threadId)
   }
 
@@ -1293,37 +1294,33 @@ export class CodexClaudeAppServer {
   }
 
   private threadGoalSet(params: Record<string, unknown>): unknown {
-    const threadId = stringOr(params.threadId, '')
-    const existing = this.goals.get(threadId)
-    const now = nowSeconds()
-    const goal = {
-      threadId,
-      objective: stringOr(params.objective, String(existing?.objective ?? '')),
-      status: typeof params.status === 'string' ? params.status : (existing?.status ?? 'active'),
-      tokenBudget:
-        typeof params.tokenBudget === 'number'
-          ? params.tokenBudget
-          : (existing?.tokenBudget ?? null),
-      tokensUsed: existing?.tokensUsed ?? 0,
-      timeUsedSeconds: existing?.timeUsedSeconds ?? 0,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    }
-    this.goals.set(threadId, goal)
-    this.notifyThread(threadId, { method: 'thread/goal/updated', params: { threadId, goal } })
+    const threadId = this.goalThreadID(params)
+    const goal = patchThreadGoal(threadId, this.store.threadGoal(threadId), params)
+    this.store.saveThreadGoal(goal)
+    setImmediate(() =>
+      this.notifyThread(threadId, { method: 'thread/goal/updated', params: { threadId, goal } }),
+    )
     return { goal }
   }
 
   private threadGoalGet(params: Record<string, unknown>): unknown {
-    return { goal: this.goals.get(stringOr(params.threadId, '')) ?? null }
+    return { goal: this.store.threadGoal(this.goalThreadID(params)) }
   }
 
   private threadGoalClear(params: Record<string, unknown>): unknown {
-    const threadId = stringOr(params.threadId, '')
-    const cleared = this.goals.delete(threadId)
+    const threadId = this.goalThreadID(params)
+    const cleared = this.store.clearThreadGoal(threadId)
     if (cleared)
-      this.notifyThread(threadId, { method: 'thread/goal/cleared', params: { threadId } })
+      setImmediate(() =>
+        this.notifyThread(threadId, { method: 'thread/goal/cleared', params: { threadId } }),
+      )
     return { cleared }
+  }
+
+  private goalThreadID(params: Record<string, unknown>): string {
+    const threadId = requiredString(params.threadId, 'threadId')
+    if (!this.store.getThread(threadId)) throw new ProtocolError(-32602, '未知会话')
+    return threadId
   }
 
   private threadAdjustElicitation(params: Record<string, unknown>, delta: number): unknown {

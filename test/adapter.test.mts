@@ -1372,7 +1372,7 @@ test('stateful HTTP bridge runtimes keep Codex title-generation turns local', as
     assert.match(logText, /"selectedType":"local-structured-summary"/)
     assert.doesNotMatch(logText, /"http\.bridge\.ensure\.start"/)
   } finally {
-    proc.kill()
+    await stopProcess(proc)
     await rm(home, { recursive: true, force: true })
   }
 })

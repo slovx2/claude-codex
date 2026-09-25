@@ -125,8 +125,11 @@ codex.
   under the system temp dir.
 - git diff / file-listing failures are written to the debug log (distinguishing
   "not a git repository" from real errors) rather than swallowed.
-- Per-thread in-memory state (command approvals, token usage, goals, elicitation
-  counts) is released when a thread is archived.
+- Per-thread in-memory state (command approvals, token usage, elicitation counts)
+  is released when a thread is archived.
+- 目标记录保存在 SQLite，归档和重启后仍保留；fork 复制独立快照，删除会话同时删除目标。
+  部分更新保留未提供字段，显式 null 清除 tokenBudget。GOAL-001/003 验证这些存储语义。
+  自动续跑、累计用量及预算停止尚待 GOAL-002 验收，当前不能宣称目标执行功能完整。
 
 ## Next targets
 
