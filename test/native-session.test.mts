@@ -29,7 +29,8 @@ test('SESSION-002：原生会话生命周期、Git 元数据及删除在重启�
     assert.deepEqual(partial.thread.gitInfo, expectedGit, '清空指定字段不能影响省略的字段')
     for (const invalid of [{ branch: '' }, { sha: 123 }, [], 'main']) {
       assert.equal(
-        (await client.raw('thread/metadata/update', { threadId, gitInfo: invalid })).error?.code,
+        (await client.raw('thread/metadata/update', { threadId, gitInfo: invalid }, -32602)).error
+          ?.code,
         -32602,
       )
     }

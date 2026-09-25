@@ -101,11 +101,15 @@ export class ProtocolClient {
     }
     return client
   }
-  private send(value: unknown): void {
-    this.trace.push({ direction: 'client', ...(value as Record<string, unknown>) })
+  private send(value: unknown, expectedErrorCode?: number): void {
+    this.trace.push({
+      direction: 'client',
+      ...(value as Record<string, unknown>),
+      ...(expectedErrorCode === undefined ? {} : { expectedErrorCode }),
+    })
     this.process.stdin.write(`${JSON.stringify(value)}\n`)
   }
-  async raw(method: string, params: unknown = {}): Promise<any> {
+  async raw(method: string, params: unknown = {}, expectedErrorCode?: number): Promise<any> {
     const id = ++this.sequence
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -115,6 +119,15 @@ export class ProtocolClient {
       this.pending.set(id, {
         resolve: (value) => {
           clearTimeout(timer)
+          if (
+            expectedErrorCode !== undefined &&
+            (value.error?.code !== expectedErrorCode || 'result' in value)
+          ) {
+            reject(
+              new Error(`RPC ${method} 应拒绝为 ${expectedErrorCode}: ${JSON.stringify(value)}`),
+            )
+            return
+          }
           resolve(value)
         },
         reject: (error) => {
@@ -122,7 +135,7 @@ export class ProtocolClient {
           reject(error)
         },
       })
-      this.send({ id, method, params })
+      this.send({ id, method, params }, expectedErrorCode)
     })
   }
   async request(method: string, params: unknown = {}): Promise<any> {
