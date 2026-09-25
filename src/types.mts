@@ -1,3 +1,4 @@
+import type { ElicitationRequest, ElicitationResult } from '@anthropic-ai/claude-agent-sdk'
 import type { RuntimeBackendType } from './runtime-config.mjs'
 
 export type JsonRpcId = string | number | null
@@ -428,6 +429,10 @@ export interface PermissionDecision {
 }
 
 export interface RuntimeHandlers {
+  onElicitationRequest?(
+    request: ElicitationRequest,
+    signal: AbortSignal,
+  ): Promise<ElicitationResult>
   onDynamicToolCall?(
     tool: { name: string; namespace?: string },
     args: unknown,

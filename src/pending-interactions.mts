@@ -18,7 +18,14 @@ export class PendingInteractions {
   }
   private readonly timeoutMs: number
 
-  request(peer: RpcPeer, method: string, id: string, params: unknown): Promise<unknown> {
+  request(
+    peer: RpcPeer,
+    method: string,
+    id: string,
+    params: unknown,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (signal?.aborted) return Promise.reject(new ProtocolError(-32010, '交互请求已取消'))
     const key = JSON.stringify([peer.id, id])
     if (this.pending.has(key)) throw new ProtocolError(-32009, '交互请求 ID 冲突')
     const threadId = String((params as Record<string, unknown>).threadId ?? '')
@@ -26,16 +33,19 @@ export class PendingInteractions {
       const finish = (response?: JsonRpcResponse, error?: Error) => {
         if (!this.pending.delete(key)) return
         clearTimeout(timer)
+        signal?.removeEventListener('abort', cancelled)
         if (error) reject(error)
         else if (response?.error)
           reject(new ProtocolError(response.error.code, response.error.message))
         else resolve(response?.result)
       }
+      const cancelled = () => finish(undefined, new ProtocolError(-32010, '交互请求已取消'))
       const timer = setTimeout(
         () => finish(undefined, new ProtocolError(-32010, '交互请求超时，结果未确认')),
         this.timeoutMs,
       )
       this.pending.set(key, { peerId: peer.id, threadId, finish })
+      signal?.addEventListener('abort', cancelled, { once: true })
       try {
         peer.send({ jsonrpc: '2.0', id, method, params })
       } catch (error) {

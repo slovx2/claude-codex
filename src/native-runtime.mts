@@ -34,9 +34,10 @@ if (!process.env.ANTHROPIC_BETAS) {
 // ANTHROPIC_API_KEY). The SDK shells out to the bundled claude-code binary
 // installed via optionalDependencies.
 
-import type { Query } from '@anthropic-ai/claude-agent-sdk'
+import type { OnElicitation, Query } from '@anthropic-ai/claude-agent-sdk'
 import { dynamicToolServer } from './dynamic-tools.mjs'
-import { sdkMcpServers, sdkMcpStartupEnvironment } from './mcp-config.mjs'
+import { sdkMcpStartupEnvironment } from './mcp-config.mjs'
+import { NativeMcpBridge } from './native-mcp-bridge.mjs'
 import { NativeTurnInput } from './native-turn-input.mjs'
 import { ProtocolError, submissionHash } from './protocol-contract.mjs'
 import { runtimePermissionOptions } from './runtime-permissions.mjs'
@@ -128,20 +129,30 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
   private turns = new Map<string, PendingTurn>()
   private inputs = new Map<string, NativeTurnInput>()
   private permissions = new Map<string, PendingPermission>()
+  private aborts = new Map<string, AbortController>()
 
   async runTurn(context: RuntimeTurnContext, handlers: RuntimeHandlers): Promise<void> {
     const input = new NativeTurnInput(this.buildPromptIterable(context))
+    const abort = new AbortController()
+    const mcp = new NativeMcpBridge()
     this.inputs.set(context.threadId, input)
+    this.aborts.set(context.threadId, abort)
     try {
       const sdk = await this.loadSdk()
       if (input.isClosed) throw new ProtocolError(-32009, '原生回合启动已取消')
-      const abort = new AbortController()
+      const options = this.buildOptions(sdk, context, abort)
+      options.mcpServers = await mcp.connect(
+        context.mcpServers,
+        context.cwd,
+        handlers,
+        abort.signal,
+      )
+      if (input.isClosed) throw new ProtocolError(-32009, '原生回合启动已取消')
       return await new Promise<void>((resolve, reject) => {
         // The SDK accepts either a plain string prompt OR an AsyncIterable of
         // SDKUserMessage envelopes. Always feed the iterable form so we have
         // room to attach image blocks alongside the text and the door is open
         // for mid-turn steer() calls.
-        const options = this.buildOptions(sdk, context, abort)
         if (context.dynamicTools?.length) {
           const nativeIds = new Map<string, string[]>()
           const hooks = options.hooks as { PreToolUse: Array<{ hooks: unknown[] }> }
@@ -206,6 +217,8 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     } finally {
       input.close()
       if (this.inputs.get(context.threadId) === input) this.inputs.delete(context.threadId)
+      if (this.aborts.get(context.threadId) === abort) this.aborts.delete(context.threadId)
+      await mcp.close()
     }
   }
 
@@ -226,11 +239,13 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
 
   async interrupt(threadId: string): Promise<void> {
     this.inputs.get(threadId)?.close()
+    this.aborts.get(threadId)?.abort()
     for (const pending of this.turns.values()) {
       if (pending.context.threadId === threadId) {
         pending.input.close()
-        await this.stopWorkflowTasks(pending)
+        // 先停止 SDK，避免清理交互时产生的工具结果触发下一次模型请求。
         pending.abort.abort()
+        await this.stopWorkflowTasks(pending)
         await pending.query.interrupt().catch(() => {})
       }
     }
@@ -238,10 +253,11 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
 
   async stop(): Promise<void> {
     for (const input of this.inputs.values()) input.close()
+    for (const abort of this.aborts.values()) abort.abort()
     for (const pending of this.turns.values()) {
       pending.input.close()
-      await this.stopWorkflowTasks(pending)
       pending.abort.abort()
+      await this.stopWorkflowTasks(pending)
     }
     this.turns.clear()
     this.permissions.clear()
@@ -317,6 +333,16 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       ...runtimePermissionOptions(context),
       disallowedTools: ['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup'],
       stderr: (data: string) => process.stderr.write(data),
+      onElicitation: (async (request, { signal }) => {
+        const pending = this.turns.get(context.turnId)
+        if (signal.aborted || !pending?.handlers.onElicitationRequest) return { action: 'cancel' }
+        try {
+          return await pending.handlers.onElicitationRequest(request, signal)
+        } catch (error) {
+          if (signal.aborted || abort.signal.aborted) return { action: 'cancel' }
+          throw error
+        }
+      }) satisfies OnElicitation,
       ...(process.env.CLAUDE_CODEX_SDK_DEBUG === '1' ? { debug: true } : {}),
     }
     if (context.model) opts.model = context.model
@@ -332,8 +358,6 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     if (context.addDirs && context.addDirs.length > 0) opts.additionalDirectories = context.addDirs
     if (context.allowedTools && context.allowedTools.length > 0)
       opts.allowedTools = context.allowedTools
-    if (context.mcpServers && typeof context.mcpServers === 'object')
-      opts.mcpServers = sdkMcpServers(context.mcpServers)
     if (context.outputFormat) opts.outputFormat = context.outputFormat
 
     // Codex App's pinned policies map onto Claude SDK's permissionMode. plan

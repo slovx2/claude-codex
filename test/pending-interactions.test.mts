@@ -15,6 +15,41 @@ function peer(id: string): RpcPeer & { messages: WireMessage[] } {
   }
 }
 
+test('MCP 请求级取消只结束指定交互，迟到回答无效', async () => {
+  const pending = new PendingInteractions(1000)
+  const owner = peer('owner')
+  const abort = new AbortController()
+  const cancelled = assert.rejects(
+    pending.request(
+      owner,
+      'mcpServer/elicitation/request',
+      'cancelled',
+      { threadId: 'same-thread' },
+      abort.signal,
+    ),
+    /已取消/,
+  )
+  const unaffected = pending.request(owner, 'mcpServer/elicitation/request', 'unaffected', {
+    threadId: 'same-thread',
+  })
+  abort.abort()
+  pending.resolve(owner, { jsonrpc: '2.0', id: 'cancelled', result: { action: 'accept' } })
+  pending.resolve(owner, { jsonrpc: '2.0', id: 'unaffected', result: { action: 'decline' } })
+  await cancelled
+  assert.deepEqual(await unaffected, { action: 'decline' })
+  await assert.rejects(
+    pending.request(
+      owner,
+      'mcpServer/elicitation/request',
+      'already-cancelled',
+      { threadId: 'same-thread' },
+      abort.signal,
+    ),
+    /已取消/,
+  )
+  assert.equal(owner.messages.length, 2)
+})
+
 test('APPROVAL-001：相同请求 ID 不能由另一个连接回答，首次回答生效', async () => {
   const pending = new PendingInteractions(1000)
   const owner = peer('owner')

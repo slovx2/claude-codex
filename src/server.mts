@@ -10,6 +10,7 @@ import { listClaudeHooks, listClaudeSkills } from './claude-capabilities.mjs'
 import { dynamicToolResult } from './dynamic-tool-result.mjs'
 import { FilesystemRpc } from './filesystem-rpc.mjs'
 import { callMcpTool, listMcpServerStatuses, readMcpConfig, readMcpResource } from './mcp.mjs'
+import { elicitationParams, elicitationResponse } from './mcp-elicitation.mjs'
 import { PendingInteractions } from './pending-interactions.mjs'
 import { ProcessRpc } from './process-rpc.mjs'
 import {
@@ -3094,6 +3095,34 @@ export class CodexClaudeAppServer {
             throw new Error(event.message)
           }
         },
+        onElicitationRequest: async (request, signal) => {
+          if (!turnIsActive() || signal.aborted) return { action: 'cancel' }
+          completeMessage()
+          const requestId = newId()
+          const params = elicitationParams(request, thread.id, turn.id)
+          this.setThreadStatus(peer, thread.id, {
+            type: 'active',
+            activeFlags: ['waitingOnUserInput'],
+          })
+          try {
+            const response = await this.sendServerRequest(
+              peer,
+              'mcpServer/elicitation/request',
+              requestId,
+              params,
+              signal,
+            )
+            if (!turnIsActive() || signal.aborted) return { action: 'cancel' }
+            return elicitationResponse(request, response)
+          } finally {
+            this.notifyThread(thread.id, {
+              method: 'serverRequest/resolved',
+              params: { threadId: thread.id, requestId },
+            })
+            if (turnIsActive())
+              this.setThreadStatus(peer, thread.id, { type: 'active', activeFlags: [] })
+          }
+        },
         onPermissionRequest: async (event) => {
           if (!turnIsActive()) return { decision: 'cancel' }
           completeMessage()
@@ -3696,15 +3725,16 @@ export class CodexClaudeAppServer {
       }
     }
     this.runtimeReadyByTurn.get(turnId)?.resolve(false)
-    this.pendingInteractions.cancelThread(threadId)
     // Persist the terminal state before asking the SDK to abort. A few SDK
     // versions deliver one or two buffered tool events during interrupt; the
     // runRuntimeTurn guard now rejects them because the turn is no longer
     // active, so they cannot create an orphan child after this point.
     // 终态先落库，执行权仍保留到 SDK 真正停止，防止旧 interrupt 命中新回合。
     // 停止失败时保留屏障，明确拒绝新提交；重启运行时后才能恢复。
-    const interrupting = Promise.resolve().then(() => this.runtime.interrupt(threadId))
+    // 必须同步触发 SDK 的 abort，再释放交互；否则 CLI 会消费取消结果继续推理。
+    const interrupting = (async () => this.runtime.interrupt(threadId))()
     this.interruptingByThread.set(threadId, interrupting)
+    this.pendingInteractions.cancelThread(threadId)
     await interrupting
     this.interruptingByThread.delete(threadId)
     this.clearActiveTurn(threadId)
@@ -4512,9 +4542,10 @@ export class CodexClaudeAppServer {
     method: string,
     id: string,
     params: unknown,
+    signal?: AbortSignal,
   ): Promise<unknown> {
     const target = this.peerForParams(peer, params)
-    return this.pendingInteractions.request(target, method, id, params)
+    return this.pendingInteractions.request(target, method, id, params, signal)
   }
 
   private completeActiveTurns(status: 'interrupted' | 'failed', error: unknown): void {
