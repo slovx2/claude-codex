@@ -10,6 +10,7 @@ import type {
   ThreadSectionAppearance,
   ThreadSectionRecord,
   ThreadStatus,
+  ThreadTokenUsage,
   TurnRecord,
   TurnStatus,
 } from './types.mjs'
@@ -54,6 +55,9 @@ export class SessionStore {
       );
       CREATE TABLE IF NOT EXISTS thread_goals (
         thread_id TEXT PRIMARY KEY, goal_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS thread_usage (
+        thread_id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, usage_json TEXT NOT NULL
       );
     `)
     this.db.exec(`
@@ -687,6 +691,21 @@ export class SessionStore {
     return row ? JSON.parse(row.goal_json) : null
   }
 
+  threadUsage(threadId: string): { turnId: string; tokenUsage: ThreadTokenUsage } | null {
+    const row = this.db
+      .prepare('SELECT turn_id,usage_json FROM thread_usage WHERE thread_id=?')
+      .get(threadId)
+    return row ? { turnId: row.turn_id, tokenUsage: JSON.parse(row.usage_json) } : null
+  }
+
+  saveThreadUsage(threadId: string, turnId: string, usage: ThreadTokenUsage): void {
+    this.db
+      .prepare(
+        'INSERT INTO thread_usage VALUES (?,?,?) ON CONFLICT(thread_id) DO UPDATE SET turn_id=excluded.turn_id, usage_json=excluded.usage_json',
+      )
+      .run(threadId, turnId, JSON.stringify(usage))
+  }
+
   saveThreadGoal(goal: ThreadGoal): void {
     this.db
       .prepare(`INSERT INTO thread_goals(thread_id,goal_json) VALUES (?,?)
@@ -792,6 +811,7 @@ export class SessionStore {
         'thread_runtime_settings',
         'tool_executions',
         'thread_goals',
+        'thread_usage',
       ])
         this.db.prepare(`DELETE FROM ${table} WHERE thread_id=?`).run(threadId)
       this.db.prepare('DELETE FROM threads WHERE id=?').run(threadId)

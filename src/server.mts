@@ -210,7 +210,6 @@ export class CodexClaudeAppServer {
   private readonly processes = new ProcessRpc()
   private readonly filesystem = new FilesystemRpc()
   private elicitationCounts = new Map<string, number>()
-  private tokenUsageByThread = new Map<string, TokenUsageBreakdown>()
   private configModel = defaultSelectableModelId()
   private configReasoningEffort =
     normalizeCodexReasoningEffort(process.env.CLAUDE_CODEX_DEFAULT_EFFORT) ?? 'medium'
@@ -832,6 +831,14 @@ export class CodexClaudeAppServer {
     })
     this.activePeerByThread.set(threadId, peer)
     this.bindPeerToDescendants(peer, threadId)
+    const usage = this.store.threadUsage(threadId)
+    if (usage)
+      setImmediate(() =>
+        this.notify(peer, {
+          method: 'thread/tokenUsage/updated',
+          params: { threadId, ...usage },
+        }),
+      )
     return {
       ...asRecord(
         this.threadEnvelope(
@@ -920,10 +927,13 @@ export class CodexClaudeAppServer {
     this.store.saveThreadSettings(id, this.store.threadSettings(parentId))
     const parentGoal = this.store.threadGoal(parentId)
     if (parentGoal) this.store.saveThreadGoal({ ...parentGoal, threadId: id })
+    const parentUsage = this.store.threadUsage(parentId)
     this.saveRuntimeSettings(id, params)
     for (const turn of this.store.listTurns(parentId)) {
       const cloned = { ...turn, id: newId(), threadId: id }
       this.store.upsertTurn(cloned)
+      if (parentUsage?.turnId === turn.id)
+        this.store.saveThreadUsage(id, cloned.id, parentUsage.tokenUsage)
       const boundary = this.store.nativeBoundary(turn.id)
       if (boundary) this.store.saveNativeBoundary(cloned.id, boundary)
     }
@@ -1186,12 +1196,11 @@ export class CodexClaudeAppServer {
     return {}
   }
 
-  // Drops per-thread in-memory state (session-scoped command approvals, token
-  // usage tallies, elicitation counts) so an archived thread does not
+  // Drops per-thread in-memory state (session-scoped command approvals,
+  // elicitation counts) so an archived thread does not
   // leak entries for the lifetime of the process.
   private clearThreadState(threadId: string): void {
     this.commandSessionAllow.delete(threadId)
-    this.tokenUsageByThread.delete(threadId)
     this.elicitationCounts.delete(threadId)
   }
 
@@ -3865,7 +3874,7 @@ export class CodexClaudeAppServer {
   ): void {
     const last = tokenBreakdownFromClaudeUsage(usage)
     if (last.totalTokens === 0) return
-    const prior = this.tokenUsageByThread.get(threadId) ?? emptyTokenBreakdown()
+    const prior = this.store.threadUsage(threadId)?.tokenUsage.total ?? emptyTokenBreakdown()
     const total: TokenUsageBreakdown = {
       totalTokens: prior.totalTokens + last.totalTokens,
       inputTokens: prior.inputTokens + last.inputTokens,
@@ -3873,8 +3882,8 @@ export class CodexClaudeAppServer {
       outputTokens: prior.outputTokens + last.outputTokens,
       reasoningOutputTokens: prior.reasoningOutputTokens + last.reasoningOutputTokens,
     }
-    this.tokenUsageByThread.set(threadId, total)
     const tokenUsage: ThreadTokenUsage = { total, last, modelContextWindow: null }
+    this.store.saveThreadUsage(threadId, turnId, tokenUsage)
     this.notify(peer, {
       method: 'thread/tokenUsage/updated',
       params: { threadId, turnId, tokenUsage },
