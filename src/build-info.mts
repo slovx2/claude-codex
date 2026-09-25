@@ -3,11 +3,13 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
+import { validateSandboxDependencies } from './sandbox-dependencies.mjs'
 
 const require = createRequire(import.meta.url)
 let cached: ReturnType<typeof collectBuildInfo> | undefined
 
 function collectBuildInfo() {
+  validateSandboxDependencies()
   const sdkRoot = dirname(require.resolve('@anthropic-ai/claude-agent-sdk'))
   const sdk = JSON.parse(readFileSync(join(sdkRoot, 'package.json'), 'utf8'))
   const cliPackage = `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`
