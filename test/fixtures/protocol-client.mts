@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readdir, readFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { saveArtifact } from './artifacts.mjs'
@@ -8,6 +8,7 @@ import { validatePayload } from './schema-contract.mjs'
 export class ProtocolClient {
   readonly trace: any[] = []
   stderr = ''
+  private readonly home: string
   private protocolErrors: Error[] = []
   readonly process: ChildProcessWithoutNullStreams
   private sequence = 0
@@ -19,6 +20,7 @@ export class ProtocolClient {
   onServerRequest: ((method: string, params: any) => Promise<unknown>) | null = null
 
   private constructor(home: string, baseURL: string, mock: boolean) {
+    this.home = home
     // 白名单环境，不能继承个人模型凭据、代理或 Claude 配置。
     const env = {
       PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
@@ -38,6 +40,7 @@ export class ProtocolClient {
       CLAUDE_CODEX_DEFAULT_MODEL: 'claude-sonnet-4-6',
       NODE_NO_WARNINGS: '1',
       CLAUDE_CODEX_SDK_DEBUG: '1',
+      DEBUG_CLAUDE_AGENT_SDK: '1',
     }
     this.process = spawn(process.execPath, [resolve('dist/src/adapter.mjs'), 'app-server'], { env })
     this.process.stderr.on('data', (chunk) => {
@@ -171,23 +174,35 @@ export class ProtocolClient {
     throw new Error(`通知超时 ${method}: ${this.stderr}`)
   }
   async close(): Promise<void> {
+    if (this.process.exitCode === null && this.process.signalCode === null) {
+      const exited = new Promise<void>((resolve) => this.process.once('exit', () => resolve()))
+      this.process.kill('SIGTERM')
+      await exited
+    }
+    // CLI 将部分连接错误写入配置目录，stderr 可能为空；只读本用例的临时目录。
+    const debugDirectory = join(this.home, 'claude', 'debug')
+    const debugFiles = await readdir(debugDirectory, { withFileTypes: true }).catch(() => [])
+    const debugLogs: Record<string, string> = {}
+    for (const file of debugFiles.filter((entry) => entry.isFile()).slice(-16)) {
+      const contents = await readFile(join(debugDirectory, file.name), 'utf8')
+      debugLogs[file.name] = this.redactDiagnostics(contents.slice(-128_000))
+    }
     // 子进程只接收白名单测试环境；保存诊断用于区分协议失败与 SDK 启动/沙箱失败。
     await saveArtifact('runtime-diagnostics', {
-      stderr: this.stderr
-        .slice(-128_000)
-        .replace(
-          /^.*(?:authorization|api.?key|access.?token|refresh.?token|password|secret).*$/gim,
-          '[redacted]',
-        )
-        .replaceAll('test-not-a-secret', '[redacted]'),
+      stderr: this.redactDiagnostics(this.stderr.slice(-128_000)),
+      debugLogs,
     })
     await saveArtifact('wire', {
       messages: this.trace,
       protocolErrors: this.protocolErrors.map((error) => error.message),
     })
-    if (this.process.exitCode !== null) return
-    const exited = new Promise<void>((resolve) => this.process.once('exit', () => resolve()))
-    this.process.kill('SIGTERM')
-    await exited
+  }
+  private redactDiagnostics(value: string): string {
+    return value
+      .replace(
+        /^.*(?:authorization|api.?key|access.?token|refresh.?token|password|secret).*$/gim,
+        '[redacted]',
+      )
+      .replaceAll('test-not-a-secret', '[redacted]')
   }
 }
