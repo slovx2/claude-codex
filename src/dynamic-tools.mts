@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { Ajv } from 'ajv'
+import { dynamicToolResult } from './dynamic-tool-result.mjs'
 import { ProtocolError, requiredString } from './protocol-contract.mjs'
 import type { RuntimeHandlers } from './types.mjs'
 
@@ -62,16 +63,13 @@ export function dynamicToolServer(
     if (!tool || !handlers.onDynamicToolCall) throw new Error('工具未注册或执行端不可用')
     if (!schemas.get(request.params.name)?.(request.params.arguments ?? {}))
       throw new ProtocolError(-32602, '工具参数不符合 JSON Schema')
-    const response = (await handlers.onDynamicToolCall(
-      tool,
-      request.params.arguments ?? {},
-      callIdentity(request.params.name, request.params.arguments ?? {}),
-    )) as {
-      success: boolean
-      contentItems: Array<Record<string, unknown>>
-    }
-    if (!response || typeof response.success !== 'boolean' || !Array.isArray(response.contentItems))
-      throw new Error('工具返回格式无效')
+    const response = dynamicToolResult(
+      await handlers.onDynamicToolCall(
+        tool,
+        request.params.arguments ?? {},
+        callIdentity(request.params.name, request.params.arguments ?? {}),
+      ),
+    )
     return {
       isError: !response.success,
       content: response.contentItems.map((item) => {

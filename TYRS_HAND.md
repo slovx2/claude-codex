@@ -28,6 +28,7 @@ npm run test:protocol
 - SQLite 保存提交 ID、原生消息边界及工具执行意图。重试同一提交不创建第二个 Turn；未知工具结果禁止自动重放。
 - 显式 session 恢复、原生 fork、rollback、原生 `/compact`。rollback 原生指针与展示历史在同一数据库事务提交；不回退工作区文件。
 - 历史分页、客户端消息 ID 回显、活动 Turn 排他。
+- 动态工具保存执行器原始结果与名称空间，避免 SDK 的模型上下文截断覆盖 UI 历史；大输出在重启后仍可完整读取，各历史视图与双向分页均有真实 SDK 用例。
 - dynamicTools 通过真实 SDK MCP 桥接到 `item/tool/call`，测试检查实际文件副作用和下一轮 tool_result。
 - HTTP MCP 的 Worker 配置字段翻译、环境变量引用、headers、同目录线程配置隔离。
 - 项目 CLAUDE.md 与独立 Claude 配置目录中的 Skill 正文进入真实模型上下文。

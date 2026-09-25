@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 import { buildInfo } from './build-info.mjs'
 import { catalogPagination } from './catalog-pagination.mjs'
 import { listClaudeHooks, listClaudeSkills } from './claude-capabilities.mjs'
+import { dynamicToolResult } from './dynamic-tool-result.mjs'
 import { FilesystemRpc } from './filesystem-rpc.mjs'
 import { callMcpTool, listMcpServerStatuses, readMcpConfig, readMcpResource } from './mcp.mjs'
 import { PendingInteractions } from './pending-interactions.mjs'
@@ -2318,17 +2319,69 @@ export class CodexClaudeAppServer {
           const previous = this.store.reserveTool(thread.id, callId, submissionHash({ tool, args }))
           if (previous) return previous.result
           const requestId = newId()
-          try {
-            const result = await this.sendServerRequest(peer, 'item/tool/call', requestId, {
+          completeMessage()
+          const startedAt = nowMillis()
+          const item: Extract<ThreadItem, { type: 'dynamicToolCall' }> = {
+            type: 'dynamicToolCall',
+            id: callId,
+            namespace: tool.namespace ?? null,
+            tool: tool.name,
+            arguments: args,
+            status: 'inProgress',
+            contentItems: null,
+            success: null,
+            durationMs: null,
+          }
+          this.store.appendItem(turn.id, item)
+          itemIds.set(callId, item.id)
+          this.notify(peer, {
+            method: 'item/started',
+            params: {
               threadId: thread.id,
               turnId: turn.id,
-              callId,
-              tool: tool.name,
-              namespace: tool.namespace ?? null,
-              arguments: args,
+              item,
+              startedAtMs: startedAt,
+            },
+          })
+          const finish = (result: unknown) => {
+            // 保存执行器原始结果，不能用 SDK 为模型截断/落盘后的 tool_result 覆盖 UI 历史。
+            if (!turnIsActive()) return
+            const output = dynamicToolResult(result)
+            const completed: ThreadItem = {
+              ...item,
+              ...output,
+              status: output.success ? 'completed' : 'failed',
+              durationMs: nowMillis() - startedAt,
+            }
+            this.store.updateItem(turn.id, item.id, () => completed)
+            this.notify(peer, {
+              method: 'item/completed',
+              params: {
+                threadId: thread.id,
+                turnId: turn.id,
+                item: completed,
+                completedAtMs: nowMillis(),
+              },
             })
+          }
+          try {
+            const result = dynamicToolResult(
+              await this.sendServerRequest(peer, 'item/tool/call', requestId, {
+                threadId: thread.id,
+                turnId: turn.id,
+                callId,
+                tool: tool.name,
+                namespace: tool.namespace ?? null,
+                arguments: args,
+              }),
+            )
             this.store.completeTool(thread.id, callId, result)
+            finish(result)
             return result
+          } catch (error) {
+            // 未收到确定结果仍保留执行意图，禁止后续重放副作用。
+            finish({ success: false, contentItems: [{ type: 'inputText', text: String(error) }] })
+            throw error
           } finally {
             this.notifyThread(thread.id, {
               method: 'serverRequest/resolved',
@@ -2799,6 +2852,8 @@ export class CodexClaudeAppServer {
             return
           }
           if (event.type === 'tool_use') {
+            // 动态工具由原始回调生成完整生命周期，SDK 的代理 MCP 事件不能再生成重复项。
+            if (event.toolName.startsWith('mcp__tyrs_hand__')) return
             if (isWorkflowToolName(event.toolName)) {
               workflowLaunchToolUseIds.add(event.toolUseId)
               workflowInFlight = true
@@ -2916,7 +2971,7 @@ export class CodexClaudeAppServer {
                 params: { threadId: thread.id, turnId: turn.id, itemId, delta: resultText },
               })
             }
-            if (item)
+            if (item && item.type !== 'dynamicToolCall')
               this.notify(peer, {
                 method: 'item/completed',
                 params: { threadId: thread.id, turnId: turn.id, item, completedAtMs: nowMillis() },
