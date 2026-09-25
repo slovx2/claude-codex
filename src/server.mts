@@ -345,9 +345,21 @@ export class CodexClaudeAppServer {
     rejectForeignModel(asRecord(params).model)
     rejectForeignModel(asRecord(asRecord(params).config).model)
     if (
-      method.startsWith('plugin/') ||
-      method.startsWith('marketplace/') ||
       [
+        'plugin/install',
+        'plugin/installed',
+        'plugin/list',
+        'plugin/read',
+        'plugin/share/checkout',
+        'plugin/share/delete',
+        'plugin/share/list',
+        'plugin/share/save',
+        'plugin/share/updateTargets',
+        'plugin/skill/read',
+        'plugin/uninstall',
+        'marketplace/add',
+        'marketplace/remove',
+        'marketplace/upgrade',
         'account/login/start',
         'account/login/cancel',
         'account/logout',

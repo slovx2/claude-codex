@@ -3,20 +3,18 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { openAIOnlyRequests } from './fixtures/capability-cases.mjs'
 import { MockLLM } from './fixtures/mock-llm.mjs'
 import { ProtocolClient } from './fixtures/protocol-client.mjs'
+import { validatePayload } from './fixtures/schema-contract.mjs'
 
 test('CAPABILITY-001：OpenAI 专属能力明确拒绝且不触发模型', { timeout: 60_000 }, async () => {
   const home = await mkdtemp(join(tmpdir(), 'native-capability-'))
   const model = new MockLLM()
   const client = await ProtocolClient.start(home, await model.start())
   try {
-    for (const [method, params] of [
-      ['account/login/start', { type: 'apiKey', apiKey: 'test-not-a-secret' }],
-      ['account/rateLimits/read', null],
-      ['plugin/list', {}],
-      ['marketplace/add', { source: 'https://example.invalid/marketplace' }],
-    ] as const) {
+    for (const [method, params] of openAIOnlyRequests) {
+      validatePayload(method, 'Params', params)
       const response = await client.raw(method, params)
       assert.equal(response.error.code, -32004, method)
       assert.equal(response.result, undefined)

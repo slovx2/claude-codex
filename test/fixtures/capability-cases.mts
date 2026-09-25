@@ -1,0 +1,31 @@
+// 固定协议版本的有效请求；未知方法不能按命名前缀误判为不适用能力。
+export const openAIOnlyRequests: ReadonlyArray<readonly [string, unknown]> = [
+  ['account/login/start', { type: 'apiKey', apiKey: 'test-not-a-secret' }],
+  ['account/login/cancel', { loginId: 'test-login' }],
+  ['account/logout', null],
+  ['account/rateLimits/read', null],
+  ['account/usage/read', null],
+  ['account/rateLimitResetCredit/consume', { idempotencyKey: 'test-reset' }],
+  ['account/sendAddCreditsNudgeEmail', { creditType: 'credits' }],
+  ['feedback/upload', { classification: 'test', includeLogs: false }],
+  ['marketplace/add', { source: 'https://example.invalid/marketplace' }],
+  ['marketplace/remove', { marketplaceName: 'test' }],
+  ['marketplace/upgrade', {}],
+  ['plugin/install', { pluginName: 'test' }],
+  ['plugin/installed', {}],
+  ['plugin/list', {}],
+  ['plugin/read', { pluginName: 'test' }],
+  ['plugin/share/checkout', { remotePluginId: 'test' }],
+  ['plugin/share/delete', { remotePluginId: 'test' }],
+  ['plugin/share/list', {}],
+  ['plugin/share/save', { pluginPath: '/tmp/test-plugin' }],
+  [
+    'plugin/share/updateTargets',
+    { remotePluginId: 'test', discoverability: 'PRIVATE', shareTargets: [] },
+  ],
+  [
+    'plugin/skill/read',
+    { remoteMarketplaceName: 'test', remotePluginId: 'test', skillName: 'test' },
+  ],
+  ['plugin/uninstall', { pluginId: 'test' }],
+]
