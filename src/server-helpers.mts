@@ -119,14 +119,31 @@ export function allSelectableModelOptions(): Array<{
   description: string
   isDefault?: boolean
 }> {
-  return claudeModelOptions()
+  if (process.env.CLAUDE_CODEX_MODELS) return claudeModelOptions()
+  // 默认项交由原生 SDK 解析 settings.json，不能用内置列表首项覆盖用户配置。
+  return [
+    {
+      id: 'claude-default',
+      sdkModel: null,
+      displayName: 'Claude configured default',
+      description: 'Use the model configured in Claude Code settings.json',
+      isDefault: true,
+    },
+    ...claudeModelOptions()
+      .filter((option) => option.id !== 'claude-default')
+      .map((option) => ({ ...option, isDefault: false })),
+  ]
 }
 
 export function defaultSelectableModelId(): string {
   const options = allSelectableModelOptions()
   const defaultModel = process.env.CLAUDE_CODEX_DEFAULT_MODEL
   if (defaultModel && options.some((option) => option.id === defaultModel)) return defaultModel
-  return options.find((option) => option.isDefault === true)?.id ?? options[0]?.id ?? 'sonnet'
+  if (process.env.CLAUDE_CODEX_MODELS)
+    return (
+      options.find((option) => option.isDefault === true)?.id ?? options[0]?.id ?? 'claude-default'
+    )
+  return 'claude-default'
 }
 
 export function normalizeSelectableModelId(value: string, fallback: string): string {

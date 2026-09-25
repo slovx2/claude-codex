@@ -30,6 +30,7 @@ npm run test:protocol
 - dynamicTools 通过真实 SDK MCP 桥接到 `item/tool/call`，测试检查实际文件副作用和下一轮 tool_result。
 - HTTP MCP 的 Worker 配置字段翻译、环境变量引用、headers、同目录线程配置隔离。
 - 项目 CLAUDE.md 与独立 Claude 配置目录中的 Skill 正文进入真实模型上下文。
+- 未显式选模型时使用 `claude-default`，由 SDK 读取原生 `settings.json`；模型列表及标题请求也保留这一选择，避免内置 Sonnet 覆盖用户配置。
 - 用户提问回调；回答限定于原始连接；重复回答、断线、取消、超时使旧请求失效。
 - Plan/只读对文件写入的实际拒绝；401、429、500、503、SSE 半断均终结失败，关闭 CLI 自动重试。
 - OpenAI 登录、额度、插件市场等明确拒绝，不转发到 Codex。

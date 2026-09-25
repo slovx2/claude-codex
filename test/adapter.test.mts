@@ -3248,10 +3248,10 @@ test('Task subagent emits the canonical activity lifecycle and leaves wait as th
     // collabAgentToolCall.model carries the SDK model the subagent runs on,
     // NOT Claude's subagent_type — the App's "Agent · model" badge depends
     // on this. The mock runs without a subagent_type so the parent's model
-    // (default 'sonnet') flows through unchanged.
+    // 默认沿用原生配置；子代理继承父会话的默认模型选择。
     assert.equal(
       spawnEnd.model,
-      'sonnet',
+      'claude-default',
       'collabAgentToolCall.model should be the parent thread model when no Task input.model is set',
     )
 

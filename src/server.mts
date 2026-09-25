@@ -29,6 +29,7 @@ import { recordRunEvent } from './run-registry.mjs'
 import { normalizeRuntimeType } from './runtime-config.mjs'
 import {
   addedFileDiff,
+  allSelectableModelOptions,
   asRecord,
   buildSystemPromptAddendum,
   coerceStructuredValue,
@@ -111,7 +112,6 @@ import type {
 } from './types.mjs'
 import {
   adapterHome,
-  claudeModelOptions,
   claudeOutputFormat,
   codexCliVersion,
   codexHome,
@@ -3715,15 +3715,7 @@ export class CodexClaudeAppServer {
 
   private modelList(): unknown {
     const defaultModel = this.configModel
-    const claudeOptions = claudeModelOptions()
-    // When a real Codex CLI binary is available on the host (CODEX_REAL env
-    // or auto-discovered), expose its native models alongside Claude's so
-    // the Codex App's per-thread model picker can route between backends
-    // without any reconnect or shell flip. Picking gpt-* flips the thread
-    // to runtimeBackend='codex' which the runtime router dispatches to
-    // CodexProxyRuntime (shells out to `codex exec --json`).
-    const codexOptions: ReturnType<typeof claudeModelOptions> = []
-    const options = [...claudeOptions, ...codexOptions]
+    const options = allSelectableModelOptions()
     const hasConfiguredDefault = options.some((option) => option.id === defaultModel)
     const reasoningEfforts = [
       { reasoningEffort: 'low', description: 'Fast runtime response' },
