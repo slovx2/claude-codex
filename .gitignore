@@ -12,3 +12,5 @@ generated/
 *.pid
 **/.vitepress/dist/
 **/.vitepress/cache/
+
+.artifacts/

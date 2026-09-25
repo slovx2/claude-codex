@@ -1,5 +1,4 @@
 import { ClaudePTranscriptRuntime } from './claude-p-runtime.mjs'
-import { CodexProxyRuntime } from './codex-proxy-runtime.mjs'
 import { HttpAgentRuntime } from './http-agent-runtime.mjs'
 import { MockRuntime } from './mock-runtime.mjs'
 import { NativeClaudeRuntime } from './native-runtime.mjs'
@@ -65,6 +64,12 @@ class SelectableRuntime implements ClaudeRuntime {
         this.activeRuntimeByThread.delete(context.threadId)
       }
     }
+  }
+
+  async forkSession(sessionId: string, cwd: string, upToMessageId?: string): Promise<string> {
+    const runtime = this.runtimeFor(this.config.type)
+    if (!runtime.forkSession) throw new Error('当前运行时不支持原生会话分叉')
+    return runtime.forkSession(sessionId, cwd, upToMessageId)
   }
 
   async steer(threadId: string, prompt: string): Promise<void> {
@@ -175,7 +180,7 @@ function instantiateRuntime(config: RuntimeConfig, type: RuntimeBackendType): Cl
     case 'claude-p':
       return new ClaudePTranscriptRuntime(config.claudeP)
     case 'codex-proxy':
-      return new CodexProxyRuntime()
+      throw new Error('Claude 入口禁止调用 Codex 引擎')
     case 'agent-sdk-sidecar':
     default:
       return new NativeClaudeRuntime()

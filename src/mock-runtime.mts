@@ -1,13 +1,23 @@
+import { randomUUID } from 'node:crypto'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ClaudeRuntime, RuntimeHandlers, RuntimeTurnContext } from './types.mjs'
 import { sleep } from './util.mjs'
 
 export class MockRuntime implements ClaudeRuntime {
+  async forkSession(_sessionId: string, _cwd: string): Promise<string> {
+    return `mock-${randomUUID()}`
+  }
   private interrupted = new Set<string>()
 
   async runTurn(context: RuntimeTurnContext, handlers: RuntimeHandlers): Promise<void> {
     this.interrupted.delete(context.threadId)
+    if (context.purpose === 'compact') {
+      await handlers.onEvent({ type: 'context_compacted', messageId: randomUUID() })
+      await handlers.onEvent({ type: 'text_delta', delta: 'MOCK_COMPACT_SUMMARY' })
+      await handlers.onEvent({ type: 'completed', success: true })
+      return
+    }
     await handlers.onEvent({
       type: 'session',
       claudeSessionId: context.claudeSessionId ?? `mock-${context.threadId}`,

@@ -95,11 +95,17 @@ test('runtime config keeps legacy defaults and accepts explicit backends', () =>
   )
 })
 
-test('native SDK runtime ignores bridge session markers when resuming SDK turns', () => {
+test('原生恢复必须保留明确的会话 ID，不能静默创建新会话', () => {
   assert.equal(sdkResumeSessionId(null), null)
-  assert.equal(sdkResumeSessionId('agent-http:http://127.0.0.1:3284'), null)
-  assert.equal(sdkResumeSessionId('agentapi:http://127.0.0.1:3284'), null)
-  assert.equal(sdkResumeSessionId('claude-p:session'), null)
+  assert.equal(
+    sdkResumeSessionId('agent-http:http://127.0.0.1:3284'),
+    'agent-http:http://127.0.0.1:3284',
+  )
+  assert.equal(
+    sdkResumeSessionId('agentapi:http://127.0.0.1:3284'),
+    'agentapi:http://127.0.0.1:3284',
+  )
+  assert.equal(sdkResumeSessionId('claude-p:session'), 'claude-p:session')
   assert.equal(sdkResumeSessionId('sdk-session'), 'sdk-session')
 })
 
@@ -152,7 +158,7 @@ test('native SDK runtime maps manual /workflows prompts to the human workflow tr
   }
 })
 
-test('explicit native SDK bypass includes the required dangerous opt-in flag', () => {
+test('环境变量不能绕过会话权限', () => {
   const previous = process.env.CLAUDE_CODEX_PERMISSION_MODE
   process.env.CLAUDE_CODEX_PERMISSION_MODE = 'bypassPermissions'
   try {
@@ -164,9 +170,9 @@ test('explicit native SDK bypass includes the required dangerous opt-in flag', (
       nativeTurnContext({ prompt: '/workflows inspect permissions' }),
       new AbortController(),
     )
-    assert.equal(options.permissionMode, 'bypassPermissions')
-    assert.equal(options.allowDangerouslySkipPermissions, true)
-    assert.equal(options.canUseTool, undefined)
+    assert.equal(options.permissionMode, 'default')
+    assert.equal(options.allowDangerouslySkipPermissions, undefined)
+    assert.equal(typeof options.canUseTool, 'function')
   } finally {
     if (previous === undefined) delete process.env.CLAUDE_CODEX_PERMISSION_MODE
     else process.env.CLAUDE_CODEX_PERMISSION_MODE = previous

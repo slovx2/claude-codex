@@ -35,6 +35,10 @@ if (!process.env.ANTHROPIC_BETAS) {
 // installed via optionalDependencies.
 
 import type { Query } from '@anthropic-ai/claude-agent-sdk'
+import { dynamicToolServer } from './dynamic-tools.mjs'
+import { sdkMcpServers, sdkMcpStartupEnvironment } from './mcp-config.mjs'
+import { submissionHash } from './protocol-contract.mjs'
+import { runtimePermissionOptions } from './runtime-permissions.mjs'
 import type {
   ClaudeRuntime,
   PermissionDecision,
@@ -131,6 +135,29 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       // for mid-turn steer() calls.
       const promptIterable = this.buildPromptIterable(context)
       const options = this.buildOptions(sdk, context, abort)
+      if (context.dynamicTools?.length) {
+        const nativeIds = new Map<string, string[]>()
+        const hooks = options.hooks as { PreToolUse: Array<{ hooks: unknown[] }> }
+        hooks.PreToolUse.push({
+          hooks: [
+            async (input: Record<string, unknown>, toolUseId: string) => {
+              const key = `${input.tool_name}:${submissionHash(input.tool_input)}`
+              const ids = nativeIds.get(key) ?? []
+              ids.push(toolUseId)
+              nativeIds.set(key, ids)
+              return {}
+            },
+          ],
+        })
+        options.mcpServers = {
+          ...((options.mcpServers as Record<string, unknown>) ?? {}),
+          tyrs_hand: dynamicToolServer(context.dynamicTools, handlers, (name, args) => {
+            const id = nativeIds.get(`mcp__tyrs_hand__${name}:${submissionHash(args)}`)?.shift()
+            if (!id) throw new Error('缺少原生工具调用 ID，禁止执行副作用')
+            return id
+          }),
+        }
+      }
 
       const query = sdk.query({ prompt: promptIterable, options })
       const pending: PendingTurn = {
@@ -191,6 +218,15 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       }
       return
     }
+  }
+
+  async forkSession(sessionId: string, cwd: string, upToMessageId?: string): Promise<string> {
+    const sdk = await this.loadSdk()
+    const result = await sdk.forkSession(sessionId, {
+      dir: cwd,
+      ...(upToMessageId ? { upToMessageId } : {}),
+    })
+    return result.sessionId
   }
 
   async interrupt(threadId: string): Promise<void> {
@@ -272,6 +308,17 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       includePartialMessages: true,
       includeHookEvents: true,
       cwd: context.cwd,
+      settingSources: ['user', 'project', 'local'],
+      // 失败后由持久化状态对账；禁止 CLI 自行重放可能已接收的模型请求。
+      env: {
+        ...process.env,
+        ...sdkMcpStartupEnvironment(context.mcpServers),
+        CLAUDE_CODE_MAX_RETRIES: '0',
+      },
+      ...runtimePermissionOptions(context),
+      disallowedTools: ['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup'],
+      stderr: (data: string) => process.stderr.write(data),
+      ...(process.env.CLAUDE_CODEX_SDK_DEBUG === '1' ? { debug: true } : {}),
     }
     if (context.model) opts.model = context.model
     if (context.effort) opts.effort = context.effort
@@ -287,7 +334,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     if (context.allowedTools && context.allowedTools.length > 0)
       opts.allowedTools = context.allowedTools
     if (context.mcpServers && typeof context.mcpServers === 'object')
-      opts.mcpServers = context.mcpServers
+      opts.mcpServers = sdkMcpServers(context.mcpServers)
     if (context.outputFormat) opts.outputFormat = context.outputFormat
 
     // Codex App's pinned policies map onto Claude SDK's permissionMode. plan
@@ -334,7 +381,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     }
 
     // CLI binary override (for users pinning a specific claude-code build).
-    if (process.env.CLAUDE_CODEX_CLI) opts.pathToClaudeCodeExecutable = process.env.CLAUDE_CODEX_CLI
+    if (process.env.CLAUDE_CODEX_CLI) throw new Error('必须使用固定 SDK 随包的 Claude CLI')
 
     void sdk // keep parameter referenced for future SDK-version-gated options
     return opts
@@ -394,21 +441,29 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       // tools would silently bypass approval). The server-side already
       // routes everything through onPermissionRequest; nothing to change here.
       const decision = await new Promise<PermissionDecision>((resolve) => {
-        this.permissions.set(requestId, { resolve })
-        void Promise.resolve(
-          pending.handlers.onPermissionRequest({
-            type: 'permission_request',
-            requestId,
-            toolUseId,
-            toolName,
-            input,
-          }),
-        ).then((d) => {
-          // The handler may resolve synchronously via the App's permission
-          // response. Surface that here.
+        const cancelled = () => finish({ decision: 'cancel' })
+        const finish = (value: PermissionDecision) => {
           this.permissions.delete(requestId)
-          resolve(d)
-        })
+          options.signal.removeEventListener('abort', cancelled)
+          resolve(value)
+        }
+        this.permissions.set(requestId, { resolve: finish })
+        if (options.signal.aborted) {
+          cancelled()
+          return
+        }
+        options.signal.addEventListener('abort', cancelled, { once: true })
+        void Promise.resolve()
+          .then(() =>
+            pending.handlers.onPermissionRequest({
+              type: 'permission_request',
+              requestId,
+              toolUseId,
+              toolName,
+              input,
+            }),
+          )
+          .then(finish, () => finish({ decision: 'decline' }))
       })
 
       if (decision.decision === 'accept' || decision.decision === 'acceptForSession') {
@@ -422,6 +477,13 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     const { context, handlers, query } = pending
     try {
       for await (const message of query as AsyncIterable<Record<string, unknown>>) {
+        if (
+          (message.type === 'assistant' || message.type === 'user') &&
+          !message.parent_tool_use_id &&
+          typeof message.uuid === 'string'
+        ) {
+          await handlers.onEvent({ type: 'native_boundary', messageId: message.uuid })
+        }
         await this.handleMessage(pending, message)
         if (pending.resolved) break
       }
@@ -443,7 +505,11 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         pending.resolved = true
         this.turns.delete(context.turnId)
         try {
-          await handlers.onEvent({ type: 'completed', success: true, result: null })
+          await handlers.onEvent({
+            type: 'completed',
+            success: false,
+            result: 'SDK 未返回终态，执行结果不确定，请读取历史对账',
+          })
           pending.resolve()
         } catch (err) {
           pending.reject(err instanceof Error ? err : new Error(String(err)))
@@ -498,6 +564,13 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     message: Record<string, unknown>,
   ): Promise<void> {
     const subtype = String(message.subtype ?? '')
+    if (subtype === 'compact_boundary') {
+      await pending.handlers.onEvent({
+        type: 'context_compacted',
+        messageId: String(message.uuid ?? ''),
+      })
+      return
+    }
     if (subtype === 'init') {
       const sessionId = String(message.session_id ?? '')
       if (sessionId) await pending.handlers.onEvent({ type: 'session', claudeSessionId: sessionId })
@@ -856,7 +929,9 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     let workflowLaunchAttached = false
     const inner = message.message as Record<string, unknown> | undefined
     if (!inner) return
-    const content = (inner.content as Array<Record<string, unknown>>) || []
+    const content = Array.isArray(inner.content)
+      ? (inner.content as Array<Record<string, unknown>>)
+      : []
     const toolResultCount = content.filter((block) => String(block.type) === 'tool_result').length
     for (const block of content) {
       if (String(block.type) !== 'tool_result') continue
@@ -1279,8 +1354,6 @@ function derivePermissionMode(
   planMode: boolean,
 ): 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto' {
   // Env-level override always wins.
-  const envOverride = configuredPermissionMode()
-  if (envOverride) return envOverride
   if (planMode) return 'plan'
   if (sandboxMode === 'danger-full-access' || approvalPolicy === 'never') return 'default'
   if (approvalPolicy === 'on-failure') return 'acceptEdits'
@@ -1371,79 +1444,8 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
-export function sdkResumeSessionId(value: string | null, cwd?: string): string | null {
-  if (!value) return null
-  if (/^(agent-http|agentapi|claude-p):/.test(value)) return null
-  if (cwd) {
-    const home = homedir()
-    const slug = (dir: string) => dir.replace(/[^a-zA-Z0-9-]/g, '-')
-    const slugs = [slug(cwd)]
-    try {
-      const real = realpathSync(cwd)
-      if (real !== cwd) slugs.push(slug(real))
-    } catch {}
-
-    // Discover all candidate config directories (default ~/.claude plus any custom router / multi-model roots)
-    const configRoots = new Set<string>([join(home, '.claude')])
-    if (process.env.CLAUDE_CONFIG_DIR) configRoots.add(process.env.CLAUDE_CONFIG_DIR)
-    const extraRoots = (process.env.CLAUDE_CONFIG_DIRS || process.env.CLAUDE_ROUTER_DIR || '')
-      .split(/[,:]/)
-      .map((p) => p.trim())
-      .filter(Boolean)
-    for (const extra of extraRoots) {
-      if (existsSync(extra)) configRoots.add(extra)
-    }
-
-    // Generic discovery of cached multi-model router config workspaces under ~/.cache/*/claude-router
-    const cacheBase = join(home, '.cache')
-    if (existsSync(cacheBase)) {
-      try {
-        for (const sub of readdirSync(cacheBase)) {
-          const routerDir = join(cacheBase, sub, 'claude-router')
-          if (existsSync(routerDir)) {
-            for (const item of readdirSync(routerDir)) {
-              configRoots.add(join(routerDir, item))
-            }
-          }
-        }
-      } catch {}
-    }
-
-    let sourceFile: string | null = null
-    for (const root of configRoots) {
-      for (const s of slugs) {
-        const p = join(root, 'projects', s, value + '.jsonl')
-        if (existsSync(p)) {
-          sourceFile = p
-          break
-        }
-      }
-      if (sourceFile) break
-      const sessFile = join(root, 'sessions', value + '.jsonl')
-      if (existsSync(sessFile)) {
-        sourceFile = sessFile
-        break
-      }
-    }
-
-    if (!sourceFile) return null
-
-    // Ensure the session transcript is mirrored across candidate project roots
-    // so switching models or routers retains 100% conversation history
-    for (const root of configRoots) {
-      for (const s of slugs) {
-        const targetDir = join(root, 'projects', s)
-        const targetFile = join(targetDir, value + '.jsonl')
-        if (targetFile === sourceFile) continue
-        try {
-          if (!existsSync(targetDir)) mkdirSync(targetDir, { recursive: true })
-          if (!existsSync(targetFile)) {
-            copyFileSync(sourceFile, targetFile)
-          }
-        } catch {}
-      }
-    }
-  }
+export function sdkResumeSessionId(value: string | null, _cwd?: string): string | null {
+  // 只恢复调用方明确指定的会话；交由 SDK 报告不存在或损坏的历史。
   return value
 }
 

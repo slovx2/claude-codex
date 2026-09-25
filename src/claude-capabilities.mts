@@ -45,7 +45,10 @@ interface HooksListEntry {
 
 export function listClaudeSkills(params: Record<string, unknown>): SkillsListEntry[] {
   const roots = cwdsFromParams(params)
-  const userSkills = readSkillDir(join(homedir(), '.claude', 'skills'), 'user')
+  const userSkills = readSkillDir(
+    join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'skills'),
+    'user',
+  )
   return roots.map((cwd) => {
     const repo = readSkillDir(join(cwd, '.claude', 'skills'), 'repo')
     return {
@@ -107,7 +110,10 @@ const HOOK_EVENT_MAP: Record<string, string> = {
 export function listClaudeHooks(params: Record<string, unknown>): HooksListEntry[] {
   const roots = cwdsFromParams(params)
   const userSources = [
-    { path: join(homedir(), '.claude', 'settings.json'), source: 'user' as const },
+    {
+      path: join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json'),
+      source: 'user' as const,
+    },
   ]
   return roots.map((cwd) => {
     const sources = [

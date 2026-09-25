@@ -7,7 +7,7 @@
   "homepage": "https://fuergaosi233.github.io/claude-codex/",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fuergaosi233/claude-codex.git"
+    "url": "git+https://github.com/slovx2/claude-codex.git"
   },
   "bugs": {
     "url": "https://github.com/fuergaosi233/claude-codex/issues"
@@ -47,21 +47,24 @@
     "acceptance:ssh-runtime-matrix": "npm run build && node scripts/acceptance-ssh-runtime-matrix.mjs",
     "probe:codex-cli-remote": "npm run build && node scripts/probe-codex-cli-remote.mjs",
     "start": "node dist/src/adapter.mjs",
-    "generate:schema": "codex app-server generate-ts --experimental --out generated/codex-app-server"
+    "generate:schema": "codex app-server generate-ts --experimental --out generated/codex-app-server",
+    "test:protocol": "npm run build && node scripts/test-protocol.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.282",
-    "ws": "^8.21.3"
+    "@anthropic-ai/claude-agent-sdk": "0.3.282",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "ajv": "8.20.0",
+    "ws": "8.21.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.14",
-    "@types/node": "^26.6.1",
-    "@types/ws": "^8.18.1",
-    "tsx": "^4.23.13",
-    "typescript": "^7.0.2",
-    "vitepress": "^1.6.4"
+    "@biomejs/biome": "2.5.14",
+    "@types/node": "26.6.1",
+    "@types/ws": "8.18.1",
+    "tsx": "4.23.13",
+    "typescript": "7.0.2",
+    "vitepress": "1.6.4"
   },
   "engines": {
-    "node": ">=24"
+    "node": "24.14.0"
   }
 }

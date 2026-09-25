@@ -158,7 +158,7 @@ export type UserInput =
   | { type: 'mention'; name: string; path: string }
 
 export type ThreadItem =
-  | { type: 'userMessage'; id: string; content: UserInput[] }
+  | { type: 'userMessage'; id: string; content: UserInput[]; clientId?: string | null }
   | { type: 'agentMessage'; id: string; text: string; phase: string | null; memoryCitation: null }
   | { type: 'plan'; id: string; text: string }
   | { type: 'reasoning'; id: string; summary: string[]; content: string[] }
@@ -299,6 +299,7 @@ export interface FileUpdateChange {
 }
 
 export interface RuntimeTurnContext {
+  dynamicTools?: unknown[]
   threadId: string
   turnId: string
   // normal = user-visible chat/review turn; summary = Codex App's structured
@@ -345,6 +346,8 @@ export interface ImageInput {
 }
 
 export type RuntimeEvent =
+  | { type: 'context_compacted'; messageId: string }
+  | { type: 'native_boundary'; messageId: string }
   | { type: 'session'; claudeSessionId: string }
   // A new top-level model response is beginning, not a streamed content block.
   | { type: 'message_boundary' }
@@ -425,6 +428,11 @@ export interface PermissionDecision {
 }
 
 export interface RuntimeHandlers {
+  onDynamicToolCall?(
+    tool: { name: string; namespace?: string },
+    args: unknown,
+    callId: string,
+  ): Promise<unknown>
   onEvent(event: RuntimeEvent): Promise<void> | void
   onPermissionRequest(
     event: Extract<RuntimeEvent, { type: 'permission_request' }>,
@@ -441,6 +449,7 @@ export interface RuntimeHandlers {
 }
 
 export interface ClaudeRuntime {
+  forkSession?(sessionId: string, cwd: string, upToMessageId?: string): Promise<string>
   runTurn(context: RuntimeTurnContext, handlers: RuntimeHandlers): Promise<void>
   steer(threadId: string, prompt: string): Promise<void>
   interrupt(threadId: string): Promise<void>

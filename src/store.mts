@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { ProtocolError, type ThreadRuntimeSettings } from './protocol-contract.mjs'
 import type {
   ThreadItem,
   ThreadRecord,
@@ -28,12 +29,28 @@ export class SessionStore {
   private db: DatabaseSync
 
   constructor(path = join(adapterHome(), 'state.sqlite')) {
-    mkdirSync(adapterHome(), { recursive: true, mode: 0o700 })
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
     this.db = openDatabase(path)
     this.migrate()
   }
 
   private migrate(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS thread_runtime_settings (
+        thread_id TEXT PRIMARY KEY, settings_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS submissions (
+        thread_id TEXT NOT NULL, message_id TEXT NOT NULL, payload_hash TEXT NOT NULL,
+        turn_id TEXT NOT NULL, PRIMARY KEY(thread_id, message_id)
+      );
+      CREATE TABLE IF NOT EXISTS native_turn_boundaries (
+        turn_id TEXT PRIMARY KEY, message_id TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS tool_executions (
+        thread_id TEXT NOT NULL, call_id TEXT NOT NULL, payload_hash TEXT NOT NULL,
+        result_json TEXT, PRIMARY KEY(thread_id, call_id)
+      );
+    `)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS threads (
         id TEXT PRIMARY KEY,
@@ -634,9 +651,114 @@ export class SessionStore {
 
   listTurns(threadId: string): TurnRecord[] {
     const rows = this.db
-      .prepare('SELECT * FROM turns WHERE thread_id = ? ORDER BY started_at ASC')
+      .prepare('SELECT * FROM turns WHERE thread_id = ? ORDER BY started_at ASC, rowid ASC')
       .all(threadId)
     return rows.map((row: unknown) => this.rowToTurn(row))
+  }
+
+  threadSettings(threadId: string): ThreadRuntimeSettings {
+    const row = this.db
+      .prepare('SELECT settings_json FROM thread_runtime_settings WHERE thread_id=?')
+      .get(threadId)
+    return row ? JSON.parse(row.settings_json) : {}
+  }
+
+  reserveTool(threadId: string, callId: string, hash: string): { result: unknown } | null {
+    const row = this.db
+      .prepare('SELECT * FROM tool_executions WHERE thread_id=? AND call_id=?')
+      .get(threadId, callId)
+    if (row) {
+      if (row.payload_hash !== hash) throw new ProtocolError(-32009, '相同工具调用 ID 的参数冲突')
+      if (row.result_json == null)
+        throw new ProtocolError(-32010, '工具执行结果不确定，禁止自动重放')
+      return { result: JSON.parse(row.result_json) }
+    }
+    this.db
+      .prepare('INSERT INTO tool_executions(thread_id,call_id,payload_hash) VALUES(?,?,?)')
+      .run(threadId, callId, hash)
+    return null
+  }
+
+  completeTool(threadId: string, callId: string, result: unknown): void {
+    this.db
+      .prepare('UPDATE tool_executions SET result_json=? WHERE thread_id=? AND call_id=?')
+      .run(JSON.stringify(result), threadId, callId)
+  }
+
+  saveThreadSettings(threadId: string, settings: ThreadRuntimeSettings): void {
+    this.db
+      .prepare(`INSERT INTO thread_runtime_settings VALUES (?,?)
+      ON CONFLICT(thread_id) DO UPDATE SET settings_json=excluded.settings_json`)
+      .run(threadId, JSON.stringify(settings))
+  }
+
+  submittedTurn(threadId: string, messageId: string, hash: string): TurnRecord | null {
+    const row = this.db
+      .prepare('SELECT * FROM submissions WHERE thread_id=? AND message_id=?')
+      .get(threadId, messageId)
+    if (!row) return null
+    if (row.payload_hash !== hash) throw new ProtocolError(-32009, '消息 ID 已被不同内容使用')
+    const turn = this.getTurn(row.turn_id)
+    if (!turn) throw new ProtocolError(-32009, '原提交已被回退，请使用新的消息 ID')
+    return turn
+  }
+
+  saveSubmission(turn: TurnRecord, messageId: string | null, hash: string): void {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.upsertTurn(turn)
+      if (messageId)
+        this.db
+          .prepare('INSERT INTO submissions VALUES (?,?,?,?)')
+          .run(turn.threadId, messageId, hash, turn.id)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  saveSteeredMessage(
+    turnId: string,
+    item: ThreadItem,
+    messageId: string | null,
+    hash: string,
+  ): void {
+    const turn = this.getTurn(turnId)
+    if (!turn) throw new ProtocolError(-32602, '未知 Turn')
+    this.saveSubmission({ ...turn, items: [...turn.items, item] }, messageId, hash)
+  }
+
+  saveNativeBoundary(turnId: string, messageId: string): void {
+    this.db
+      .prepare(`INSERT INTO native_turn_boundaries VALUES (?,?)
+      ON CONFLICT(turn_id) DO UPDATE SET message_id=excluded.message_id`)
+      .run(turnId, messageId)
+  }
+
+  nativeBoundary(turnId: string): string | null {
+    return (
+      this.db.prepare('SELECT message_id FROM native_turn_boundaries WHERE turn_id=?').get(turnId)
+        ?.message_id ?? null
+    )
+  }
+
+  deleteThread(threadId: string): void {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db
+        .prepare(
+          'DELETE FROM native_turn_boundaries WHERE turn_id IN (SELECT id FROM turns WHERE thread_id=?)',
+        )
+        .run(threadId)
+      for (const table of ['turns', 'submissions', 'thread_runtime_settings', 'tool_executions'])
+        this.db.prepare(`DELETE FROM ${table} WHERE thread_id=?`).run(threadId)
+      this.db.prepare('DELETE FROM threads WHERE id=?').run(threadId)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
   }
 
   // Used by thread/rollback to drop the N most recent turns from a thread's
@@ -646,12 +768,31 @@ export class SessionStore {
   deleteRecentTurns(threadId: string, numTurns: number): number {
     if (numTurns <= 0) return 0
     const ids = this.db
-      .prepare('SELECT id FROM turns WHERE thread_id = ? ORDER BY started_at DESC LIMIT ?')
+      .prepare(
+        'SELECT id FROM turns WHERE thread_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?',
+      )
       .all(threadId, numTurns) as Array<{ id: string }>
     if (ids.length === 0) return 0
     const stmt = this.db.prepare('DELETE FROM turns WHERE id = ?')
-    for (const row of ids) stmt.run(row.id)
+    for (const row of ids) {
+      this.db.prepare('DELETE FROM native_turn_boundaries WHERE turn_id=?').run(row.id)
+      stmt.run(row.id)
+    }
     return ids.length
+  }
+
+  // 原生分叉成功后一次提交 session 指针及展示历史。崩溃最多留下未引用的原生分支。
+  commitRollback(thread: ThreadRecord, numTurns: number): number {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.upsertThread(thread)
+      const dropped = this.deleteRecentTurns(thread.id, numTurns)
+      this.db.exec('COMMIT')
+      return dropped
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
   }
 
   appendItem(turnId: string, item: ThreadItem): TurnRecord | null {

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { chmodSync, existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { buildInfo } from './build-info.mjs'
 import { createRuntime } from './runtime-factory.mjs'
 import { CodexClaudeAppServer } from './server.mjs'
 import { SessionStore } from './store.mjs'
@@ -52,6 +53,10 @@ process.on('unhandledRejection', (reason: unknown) => {
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2)
+  if (args[0] === '--runtime-info') {
+    process.stdout.write(`${JSON.stringify(buildInfo())}\n`)
+    return
+  }
   if (args[0] !== 'app-server') {
     usage(1)
     return

@@ -513,7 +513,7 @@ test('mcpServerStatus/list and startup notifications use conformant Codex v2 sha
   }
 })
 
-test('thread/start with a gpt-* model marks the thread runtimeBackend=codex', async () => {
+test('Claude 入口拒绝 GPT 模型，恢复不会改变引擎', async () => {
   const home = await mkdtemp(join(tmpdir(), 'claude-codex-test-'))
   const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -539,20 +539,15 @@ test('thread/start with a gpt-* model marks the thread runtimeBackend=codex', as
       }),
     )
     const codexStart = await reader.nextResponse(2)
-    assert.equal(codexStart.result.model, 'gpt-5.4-mini')
-
-    // Cross-backend model change on resume must be refused — the conversation
-    // history wouldn't transfer between Claude SDK and codex exec.
-    const codexId = codexStart.result.thread.id
+    assert.equal(codexStart.error.code, -32602)
     proc.stdin.write(
-      json({ id: 3, method: 'thread/resume', params: { threadId: codexId, model: 'opus' } }),
+      json({
+        id: 3,
+        method: 'thread/resume',
+        params: { threadId: claudeStart.result.thread.id, model: 'gpt-5.4-mini' },
+      }),
     )
-    const resumed = await reader.nextResponse(3)
-    assert.equal(
-      resumed.result.model,
-      'gpt-5.4-mini',
-      'resume must reject cross-backend model flip',
-    )
+    assert.equal((await reader.nextResponse(3)).error.code, -32602)
   } finally {
     proc.kill()
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 80 })
@@ -605,7 +600,7 @@ test('model/list exposes Claude model aliases and Codex-safe reasoning efforts',
 
     proc.stdin.write(json({ id: 7, method: 'account/read', params: {} }))
     const account = await reader.nextResponse(7)
-    assert.deepEqual(account.result.account, { type: 'amazonBedrock' })
+    assert.equal(account.result.account, null)
     assert.equal(account.result.requiresOpenaiAuth, false)
 
     proc.stdin.write(json({ id: 2, method: 'model/list', params: {} }))
@@ -790,7 +785,7 @@ test('config/read resolves saved provider loop selection without projecting raw 
       }),
     )
     const resumed = await reader.nextResponse(4)
-    assert.equal(resumed.result.model, 'sonnet')
+    assert.equal(resumed.result.model, 'opus')
   } finally {
     proc.kill()
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 80 })
@@ -1161,7 +1156,7 @@ test('Codex app model ids and outputSchema map into Claude runtime context', asy
         method: 'thread/start',
         params: {
           cwd: process.cwd(),
-          model: 'gpt-5.4-mini',
+          model: 'haiku',
           experimentalRawEvents: false,
           persistExtendedHistory: false,
         },
@@ -1169,7 +1164,7 @@ test('Codex app model ids and outputSchema map into Claude runtime context', asy
     )
     const start = await reader.nextResponse(1)
     const threadId = start.result.thread.id
-    assert.equal(start.result.model, 'gpt-5.4-mini')
+    assert.equal(start.result.model, 'haiku')
 
     const outputSchema = {
       type: 'object',
@@ -1183,7 +1178,7 @@ test('Codex app model ids and outputSchema map into Claude runtime context', asy
         method: 'turn/start',
         params: {
           threadId,
-          model: 'gpt-5.4-mini',
+          model: 'haiku',
           outputSchema,
           input: [{ type: 'text', text: 'output schema check', text_elements: [] }],
         },
@@ -1262,7 +1257,7 @@ test('Codex title-generation turn runs through the runtime instead of a hardcode
         method: 'turn/start',
         params: {
           threadId,
-          model: 'gpt-5.4-mini',
+          model: 'haiku',
           effort: 'medium',
           outputSchema,
           input: [{ type: 'text', text: prompt, text_elements: [] }],
@@ -1300,7 +1295,7 @@ test('Codex title-generation turn runs through the runtime instead of a hardcode
     assert.equal(
       parsed.model,
       'haiku',
-      'gpt-5.4-mini should map to the summary model (haiku) when an outputSchema is set',
+      'haiku should map to the summary model (haiku) when an outputSchema is set',
     )
     const logText = await readFile(debugLog, 'utf8')
     assert.doesNotMatch(
@@ -1358,7 +1353,7 @@ test('stateful HTTP bridge runtimes keep Codex title-generation turns local', as
         method: 'turn/start',
         params: {
           threadId,
-          model: 'gpt-5.4-mini',
+          model: 'haiku',
           outputSchema,
           input: [{ type: 'text', text: 'User prompt:\nhi', text_elements: [] }],
         },
@@ -3957,7 +3952,7 @@ test('thread/start with ephemeral=true is hidden from thread/list and surfaces t
           cwd: process.cwd(),
           ephemeral: true,
           threadSource: 'memory_consolidation',
-          model: 'gpt-5.4-mini',
+          model: 'haiku',
         },
       }),
     )
@@ -4400,10 +4395,7 @@ test('compatibility-only UI methods return schema-shaped responses', async () =>
     assert.deepEqual((await reader.nextResponse(7)).result, { status: 'notConfigured' })
 
     proc.stdin.write(json({ id: 7, method: 'plugin/install', params: { pluginName: 'demo' } }))
-    assert.deepEqual((await reader.nextResponse(7)).result, {
-      authPolicy: 'ON_USE',
-      appsNeedingAuth: [],
-    })
+    assert.equal((await reader.nextResponse(7)).error.code, -32004)
   } finally {
     proc.kill()
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 80 })
@@ -4555,7 +4547,7 @@ test('thread resume, fork, and interrupt lifecycle methods are stable', async ()
     )
     const fork = await reader.nextResponse(4)
     assert.equal(fork.result.thread.forkedFromId, threadId)
-    assert.equal(fork.result.thread.sessionId, resume.result.thread.sessionId)
+    assert.notEqual(fork.result.thread.sessionId, resume.result.thread.sessionId)
 
     proc.stdin.write(json({ id: 5, method: 'turn/interrupt', params: { threadId } }))
     const interrupt = await reader.nextResponse(5)

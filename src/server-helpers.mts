@@ -119,7 +119,7 @@ export function allSelectableModelOptions(): Array<{
   description: string
   isDefault?: boolean
 }> {
-  return [...claudeModelOptions(), ...codexProxyModelOptions()]
+  return claudeModelOptions()
 }
 
 export function defaultSelectableModelId(): string {
