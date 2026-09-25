@@ -72,6 +72,7 @@ export interface ThreadRuntimeSettings {
   historyMode?: 'legacy' | 'paginated'
   dynamicTools?: unknown[]
   config?: Record<string, unknown>
+  gitInfo?: { sha: string | null; branch: string | null; originUrl: string | null } | null
 }
 
 export function rejectForeignModel(model: unknown): void {

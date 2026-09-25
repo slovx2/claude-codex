@@ -93,6 +93,7 @@ import {
   wrapMcpToolResult,
 } from './server-helpers.mjs'
 import { PINNED_SECTION_ID, type SessionStore } from './store.mjs'
+import { patchGitInfo } from './thread-metadata.mjs'
 import type {
   ClaudeRuntime,
   FileUpdateChange,
@@ -438,6 +439,8 @@ export class CodexClaudeAppServer {
         if (this.activeTurnByThread.has(threadId))
           throw new ProtocolError(-32009, '活动会话不能删除')
         this.store.deleteThread(threadId)
+        this.notifyThread(threadId, { method: 'thread/closed', params: { threadId } })
+        this.activePeerByThread.delete(threadId)
         this.clearThreadState(threadId)
         return {}
       }
@@ -1085,9 +1088,9 @@ export class CodexClaudeAppServer {
   }
 
   private threadRead(params: Record<string, unknown>): unknown {
-    const threadId = stringOr(params.threadId, '')
+    const threadId = requiredString(params.threadId, 'threadId')
     const thread = this.store.getThread(threadId)
-    if (!thread) throw new Error('unknown thread: ' + threadId)
+    if (!thread) throw new ProtocolError(-32602, '未知会话')
     // Codex cc hydrates the Subagent panel with includeTurns:false. A
     // parent-linked child with no renderable turns is treated by that client
     // as still loading, and it does not reliably follow up with turns/list.
@@ -1153,7 +1156,8 @@ export class CodexClaudeAppServer {
   }
 
   private threadNameSet(params: Record<string, unknown>): unknown {
-    const threadId = stringOr(params.threadId, '')
+    const threadId = requiredString(params.threadId, 'threadId')
+    if (!this.store.getThread(threadId)) throw new ProtocolError(-32602, '未知会话')
     const name = params.name == null ? null : String(params.name)
     this.store.updateThreadName(threadId, name)
     this.notifyThread(threadId, {
@@ -1164,7 +1168,8 @@ export class CodexClaudeAppServer {
   }
 
   private threadArchive(params: Record<string, unknown>, archived: boolean): unknown {
-    const threadId = stringOr(params.threadId, '')
+    const threadId = requiredString(params.threadId, 'threadId')
+    if (!this.store.getThread(threadId)) throw new ProtocolError(-32602, '未知会话')
     this.store.setArchived(threadId, archived)
     this.notifyThread(threadId, {
       method: archived ? 'thread/archived' : 'thread/unarchived',
@@ -1329,9 +1334,11 @@ export class CodexClaudeAppServer {
   }
 
   private threadMetadataUpdate(params: Record<string, unknown>): unknown {
-    const threadId = stringOr(params.threadId, '')
+    const threadId = requiredString(params.threadId, 'threadId')
     const thread = this.store.getThread(threadId)
-    if (!thread) throw new Error(`unknown thread: ${threadId}`)
+    if (!thread) throw new ProtocolError(-32602, '未知会话')
+    const settings = this.store.threadSettings(threadId)
+    const gitInfo = patchGitInfo(settings.gitInfo, params.gitInfo)
 
     // Support dynamic model, reasoning effort, approval policy and sandbox updates
     const rawModel = modelFromParams(params, null)
@@ -1370,6 +1377,10 @@ export class CodexClaudeAppServer {
 
     thread.updatedAt = nowSeconds()
     this.store.upsertThread(thread)
+    if (Object.hasOwn(params, 'gitInfo')) {
+      settings.gitInfo = gitInfo ?? null
+      this.store.saveThreadSettings(threadId, settings)
+    }
 
     return this.threadEnvelope(thread, this.store.listTurns(threadId))
   }
@@ -4270,7 +4281,7 @@ export class CodexClaudeAppServer {
       threadSource: normalizeThreadSource(thread.threadSource),
       agentNickname,
       agentRole,
-      gitInfo: null,
+      gitInfo: this.store.threadSettings(thread.id).gitInfo ?? null,
       name: thread.name,
       turns: turns.map((turn) => this.toTurn(turn)),
     }
