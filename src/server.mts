@@ -10,6 +10,7 @@ import { catalogPagination } from './catalog-pagination.mjs'
 import { listClaudeHooks, listClaudeSkills } from './claude-capabilities.mjs'
 import { dynamicToolResult } from './dynamic-tool-result.mjs'
 import { FilesystemRpc } from './filesystem-rpc.mjs'
+import { fuzzyPathMatch } from './fuzzy-search.mjs'
 import { readMcpConfig } from './mcp.mjs'
 import { sdkMcpServers } from './mcp-config.mjs'
 import { elicitationParams, elicitationResponse } from './mcp-elicitation.mjs'
@@ -4321,27 +4322,34 @@ export class CodexClaudeAppServer {
     rawQuery: string,
     roots: string[],
   ): Promise<Array<Record<string, unknown>>> {
-    const query = rawQuery.toLowerCase()
-    const files: Array<Record<string, unknown>> = []
+    const files: Array<{
+      root: string
+      path: string
+      match_type: string
+      file_name: string
+      score: number
+      indices: number[]
+    }> = []
     for (const root of roots) {
       const paths = await listFiles(root)
       for (const path of paths) {
         const fileName = path.split('/').at(-1) ?? path
-        const haystack = path.toLowerCase()
-        if (query && !haystack.includes(query)) continue
+        const match = fuzzyPathMatch(rawQuery, path)
+        if (!match) continue
         files.push({
           root,
           path,
           match_type: 'file',
           file_name: fileName,
-          score: query ? Math.max(1, 100 - haystack.indexOf(query)) : 1,
-          indices: null,
+          ...match,
         })
-        if (files.length >= 100) break
       }
-      if (files.length >= 100) break
     }
     return files
+      .sort(
+        (a, b) => b.score - a.score || a.path.localeCompare(b.path) || a.root.localeCompare(b.root),
+      )
+      .slice(0, 100)
   }
 
   private fuzzySessionStart(params: Record<string, unknown>): unknown {
