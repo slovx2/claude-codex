@@ -621,7 +621,9 @@ test('model/list exposes Claude model aliases and Codex-safe reasoning efforts',
     )
     const opus = models.result.data.find((model: any) => model.id === 'opus')
     assert.equal(opus.isDefault, true)
-    assert.equal('serviceTiers' in opus, false)
+    assert.deepEqual(opus.serviceTiers, [])
+    assert.equal(opus.defaultServiceTier, null)
+    assert.equal(opus.modelSpecialty, null)
     assert.equal(models.result.data.filter((model: any) => model.isDefault === true).length, 1)
     assert.deepEqual(
       opus.supportedReasoningEfforts.map((entry: any) => entry.reasoningEffort),

@@ -23,6 +23,16 @@ test('CAPABILITY-001：OpenAI 专属能力明确拒绝且不触发模型', { tim
       account: null,
       requiresOpenaiAuth: false,
     })
+    const catalog = await client.request('model/list', { limit: 100 })
+    validatePayload('model/list', 'Response', catalog)
+    assert.ok(catalog.data.length > 0)
+    for (const option of catalog.data) {
+      // 手机参数面板依赖完整的 0.147.0 模型字段；Claude 不伪装 OpenAI 服务等级。
+      assert.deepEqual(option.serviceTiers, [])
+      assert.equal(option.defaultServiceTier, null)
+      assert.equal(option.modelSpecialty, null)
+      assert.ok(option.supportedReasoningEfforts.length > 0)
+    }
     assert.equal((await client.raw('unknown/protocol')).error.code, -32601)
     assert.equal(
       (await client.raw('thread/start', { cwd: home, model: 'gpt-5.6' })).error.code,
