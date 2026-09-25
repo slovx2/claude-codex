@@ -158,6 +158,16 @@ export class ProtocolClient {
     throw new Error(`通知超时 ${method}: ${this.stderr}`)
   }
   async close(): Promise<void> {
+    // 子进程只接收白名单测试环境；保存诊断用于区分协议失败与 SDK 启动/沙箱失败。
+    await saveArtifact('runtime-diagnostics', {
+      stderr: this.stderr
+        .slice(-128_000)
+        .replace(
+          /^.*(?:authorization|api.?key|access.?token|refresh.?token|password|secret).*$/gim,
+          '[redacted]',
+        )
+        .replaceAll('test-not-a-secret', '[redacted]'),
+    })
     await saveArtifact('wire', {
       messages: this.trace,
       protocolErrors: this.protocolErrors.map((error) => error.message),
