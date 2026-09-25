@@ -9,6 +9,7 @@ import { listClaudeHooks, listClaudeSkills } from './claude-capabilities.mjs'
 import { FilesystemRpc } from './filesystem-rpc.mjs'
 import { callMcpTool, listMcpServerStatuses, readMcpConfig, readMcpResource } from './mcp.mjs'
 import { PendingInteractions } from './pending-interactions.mjs'
+import { ProcessRpc } from './process-rpc.mjs'
 import {
   ProtocolError,
   pageRecords,
@@ -202,7 +203,7 @@ export class CodexClaudeAppServer {
   private fuzzySessions = new Map<string, { roots: string[] }>()
   private commandSessionAllow = new Map<string, Set<string>>()
   private commandProcesses = new Map<string, ChildProcess>()
-  private processHandles = new Map<string, ChildProcess>()
+  private readonly processes = new ProcessRpc()
   private readonly filesystem = new FilesystemRpc()
   private goals = new Map<string, Record<string, unknown>>()
   private elicitationCounts = new Map<string, number>()
@@ -256,6 +257,7 @@ export class CodexClaudeAppServer {
   closePeer(peer: RpcPeer): void {
     this.pendingInteractions.cancelPeer(peer.id)
     this.filesystem.closePeer(peer.id)
+    this.processes.closePeer(peer.id)
     debugLog('peer.close', { peerId: peer.id })
     for (const [threadId, activePeer] of this.activePeerByThread.entries()) {
       if (activePeer.id === peer.id) this.activePeerByThread.delete(threadId)
@@ -267,6 +269,7 @@ export class CodexClaudeAppServer {
     this.stopped = true
     this.pendingInteractions.close()
     this.filesystem.close()
+    await this.processes.close()
     // Child turns are created directly from Task/Workflow events and are not
     // registered in activeTurnByThread. Finalize them before aborting the
     // runtime or closing SQLite, otherwise stdio EOF can leave child turns
@@ -631,21 +634,21 @@ export class CodexClaudeAppServer {
       case 'fs/unwatch':
         return this.filesystem.call(peer, method, asRecord(params))
       case 'command/exec':
-        return this.commandExec(peer, asRecord(params))
+        return this.processes.start(peer, 'command', asRecord(params))
       case 'command/exec/write':
-        return this.commandExecWrite(asRecord(params))
+        return this.processes.followup(peer, 'command', 'write', asRecord(params))
       case 'command/exec/terminate':
-        return this.commandExecTerminate(asRecord(params))
+        return this.processes.followup(peer, 'command', 'kill', asRecord(params))
       case 'command/exec/resize':
-        return {}
+        return this.processes.followup(peer, 'command', 'resize', asRecord(params))
       case 'process/spawn':
-        return this.processSpawn(peer, asRecord(params))
+        return this.processes.start(peer, 'process', asRecord(params))
       case 'process/writeStdin':
-        return this.processWriteStdin(asRecord(params))
+        return this.processes.followup(peer, 'process', 'write', asRecord(params))
       case 'process/kill':
-        return this.processKill(asRecord(params))
+        return this.processes.followup(peer, 'process', 'kill', asRecord(params))
       case 'process/resizePty':
-        return this.processResizePty(asRecord(params))
+        return this.processes.followup(peer, 'process', 'resize', asRecord(params))
       case 'externalAgentConfig/detect':
         return { items: [] }
       case 'externalAgentConfig/import':
@@ -1490,7 +1493,7 @@ export class CodexClaudeAppServer {
     debugLog('thread.backgroundTerminals.clean', {
       threadId: stringOr(params.threadId, ''),
       activeCommandProcesses: this.commandProcesses.size,
-      activeProcessHandles: this.processHandles.size,
+      activeProcessHandles: this.processes.activeCount,
     })
     return {}
   }
@@ -3785,355 +3788,6 @@ export class CodexClaudeAppServer {
     // real rate-limit data from the Anthropic SDK (no headers exposed), the
     // notification was empty noise. The initial snapshot still fires once
     // post-handshake in `initialize` so the UI populates on first connect.
-  }
-
-  private async commandExec(peer: RpcPeer, params: Record<string, unknown>): Promise<unknown> {
-    const processId = typeof params.processId === 'string' ? params.processId : newId()
-    const command = commandArray(params.command)
-    if (command.length === 0) throw new Error('command/exec requires command')
-    if (
-      (params.streamStdoutStderr === true || params.streamStdin === true || params.tty === true) &&
-      typeof params.processId !== 'string'
-    ) {
-      throw new Error('command/exec streaming requires processId')
-    }
-
-    const executable = command[0] as string
-    const streamOutput = params.streamStdoutStderr === true || params.tty === true
-    const cwd = stringOr(params.cwd, process.cwd())
-    debugLog('command.exec.start', {
-      processId,
-      cwd,
-      command,
-      streamOutput,
-      streamStdin: params.streamStdin === true,
-      tty: params.tty === true,
-    })
-    const child = spawn(executable, command.slice(1), {
-      cwd,
-      env: commandEnv(params.env),
-      stdio: 'pipe',
-    })
-    this.commandProcesses.set(processId, child)
-
-    const stdout: Buffer[] = []
-    const stderr: Buffer[] = []
-    const cap =
-      params.disableOutputCap === true
-        ? Number.POSITIVE_INFINITY
-        : numberOr(params.outputBytesCap, 1_000_000)
-    let stdoutBytes = 0
-    let stderrBytes = 0
-
-    const capture = (target: Buffer[], chunk: Buffer, currentBytes: number): number => {
-      if (currentBytes >= cap) return currentBytes
-      const allowed = Math.min(chunk.byteLength, cap - currentBytes)
-      if (allowed > 0) target.push(chunk.subarray(0, allowed))
-      return currentBytes + allowed
-    }
-
-    child.stdout?.on('data', (chunk: Buffer | string) => {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-      if (streamOutput) {
-        this.notify(peer, {
-          method: 'command/exec/outputDelta',
-          params: {
-            processId,
-            stream: 'stdout',
-            deltaBase64: buffer.toString('base64'),
-            capReached: false,
-          },
-        })
-        return
-      }
-      stdoutBytes = capture(stdout, buffer, stdoutBytes)
-    })
-    child.stderr?.on('data', (chunk: Buffer | string) => {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-      if (streamOutput) {
-        this.notify(peer, {
-          method: 'command/exec/outputDelta',
-          params: {
-            processId,
-            stream: 'stderr',
-            deltaBase64: buffer.toString('base64'),
-            capReached: false,
-          },
-        })
-        return
-      }
-      stderrBytes = capture(stderr, buffer, stderrBytes)
-    })
-
-    const timeoutMs = params.disableTimeout === true ? null : numberOr(params.timeoutMs, 60_000)
-    let timeout: NodeJS.Timeout | null = null
-    if (timeoutMs != null && timeoutMs > 0) {
-      timeout = setTimeout(() => child.kill('SIGTERM'), timeoutMs)
-    }
-
-    return new Promise((resolve, reject) => {
-      child.once('error', (error) => {
-        debugLog('command.exec.error', {
-          processId,
-          error: error.message,
-          code: (error as NodeJS.ErrnoException).code,
-        })
-        if (timeout) clearTimeout(timeout)
-        this.commandProcesses.delete(processId)
-        reject(error)
-      })
-      child.once('close', (code, signal) => {
-        debugLog('command.exec.close', { processId, code, signal, stdoutBytes, stderrBytes })
-        if (timeout) clearTimeout(timeout)
-        this.commandProcesses.delete(processId)
-        resolve({
-          exitCode: code ?? 1,
-          stdout: streamOutput ? '' : Buffer.concat(stdout).toString('utf8'),
-          stderr: streamOutput ? '' : Buffer.concat(stderr).toString('utf8'),
-        })
-      })
-    })
-  }
-
-  private commandExecWrite(params: Record<string, unknown>): unknown {
-    const processId = stringOr(params.processId, '')
-    const child = this.commandProcesses.get(processId)
-    if (!child) throw new Error(`unknown command process: ${processId}`)
-    if (typeof params.deltaBase64 === 'string' && params.deltaBase64.length > 0) {
-      child.stdin?.write(Buffer.from(params.deltaBase64, 'base64'))
-    }
-    if (params.closeStdin === true) {
-      child.stdin?.end()
-    }
-    return {}
-  }
-
-  private commandExecTerminate(params: Record<string, unknown>): unknown {
-    const processId = stringOr(params.processId, '')
-    const child = this.commandProcesses.get(processId)
-    if (!child) throw new Error(`unknown command process: ${processId}`)
-    child.kill('SIGTERM')
-    return {}
-  }
-
-  private processSpawn(peer: RpcPeer, params: Record<string, unknown>): unknown {
-    const processHandle = stringOr(params.processHandle, '')
-    if (!processHandle) throw new Error('process/spawn requires processHandle')
-    if (this.processHandles.has(processHandle))
-      throw new Error(`process handle already active: ${processHandle}`)
-    const command = commandArray(params.command)
-    if (command.length === 0) throw new Error('process/spawn requires command')
-    const cwd = stringOr(params.cwd, process.cwd())
-    const isTty = params.tty === true
-    const streamOutput = params.streamStdoutStderr === true || isTty
-    const cap =
-      params.outputBytesCap == null ? 1_000_000 : numberOr(params.outputBytesCap, 1_000_000)
-    const stdout: Buffer[] = []
-    const stderr: Buffer[] = []
-    let stdoutBytes = 0
-    let stderrBytes = 0
-    let stdoutCapReached = false
-    let stderrCapReached = false
-    let exited = false
-
-    debugLog('process.spawn.start', {
-      processHandle,
-      cwd,
-      command,
-      streamOutput,
-      streamStdin: params.streamStdin === true,
-      tty: isTty,
-    })
-
-    // For interactive TTY sessions (e.g. Codex App built-in terminal), spawn via pty-bridge.py
-    // to allocate a real pseudo-terminal (PTY) master/slave pair with ANSI echo & ZLE line editor.
-    let child: ChildProcess
-    const file = fileURLToPath(import.meta.url)
-    const candidates = [
-      join(file, '../../../scripts/pty-bridge.py'),
-      join(file, '../../scripts/pty-bridge.py'),
-      join(homedir(), '.local/share/claude-codex/scripts/pty-bridge.py'),
-    ]
-    const ptyBridge = candidates.find((c) => c && existsSync(c))
-    if (isTty && ptyBridge && existsSync(ptyBridge)) {
-      child = spawn('python3', [ptyBridge, ...command], {
-        cwd,
-        env: { ...commandEnv(params.env), TERM: 'xterm-256color' },
-        stdio: ['pipe', 'pipe', 'inherit'],
-      })
-      ;(child as any).__isPtyBridge = true
-    } else {
-      child = spawn(command[0] as string, command.slice(1), {
-        cwd,
-        env: commandEnv(params.env),
-        stdio: 'pipe',
-      })
-    }
-    this.processHandles.set(processHandle, child)
-
-    const capture = (target: Buffer[], chunk: Buffer, currentBytes: number): [number, boolean] => {
-      if (currentBytes >= cap) return [currentBytes, true]
-      const allowed = Math.min(chunk.byteLength, cap - currentBytes)
-      if (allowed > 0) target.push(chunk.subarray(0, allowed))
-      return [currentBytes + allowed, allowed < chunk.byteLength]
-    }
-
-    if ((child as any).__isPtyBridge) {
-      let bufferStr = ''
-      child.stdout?.on('data', (chunk: Buffer | string) => {
-        bufferStr += chunk.toString('utf8')
-        const lines = bufferStr.split(/\r?\n/)
-        bufferStr = lines.pop() ?? ''
-        for (const line of lines) {
-          if (!line.trim()) continue
-          try {
-            const msg = JSON.parse(line)
-            if (msg.stream === 'stdout') {
-              this.notify(peer, {
-                method: 'process/outputDelta',
-                params: {
-                  processHandle,
-                  stream: 'stdout',
-                  deltaBase64: msg.delta,
-                  capReached: false,
-                },
-              })
-            }
-          } catch {}
-        }
-      })
-    } else {
-      child.stdout?.on('data', (chunk: Buffer | string) => {
-        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-        if (streamOutput) {
-          this.notify(peer, {
-            method: 'process/outputDelta',
-            params: {
-              processHandle,
-              stream: 'stdout',
-              deltaBase64: buffer.toString('base64'),
-              capReached: false,
-            },
-          })
-        } else {
-          ;[stdoutBytes, stdoutCapReached] = capture(stdout, buffer, stdoutBytes)
-        }
-      })
-      child.stderr?.on('data', (chunk: Buffer | string) => {
-        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-        if (streamOutput) {
-          this.notify(peer, {
-            method: 'process/outputDelta',
-            params: {
-              processHandle,
-              stream: 'stderr',
-              deltaBase64: buffer.toString('base64'),
-              capReached: false,
-            },
-          })
-        } else {
-          ;[stderrBytes, stderrCapReached] = capture(stderr, buffer, stderrBytes)
-        }
-      })
-    }
-
-    // Do not impose a default timeout on interactive/streaming terminal sessions (tty or streamStdin)
-    const isInteractive = isTty || params.streamStdin === true
-    const defaultTimeout = isInteractive ? 0 : 60_000
-    const timeoutMs =
-      params.timeoutMs == null ? defaultTimeout : numberOr(params.timeoutMs, defaultTimeout)
-    const timeout = timeoutMs > 0 ? setTimeout(() => child.kill('SIGTERM'), timeoutMs) : null
-
-    child.once('error', (error) => {
-      debugLog('process.spawn.error', {
-        processHandle,
-        error: error.message,
-        code: (error as NodeJS.ErrnoException).code,
-      })
-      if (exited) return
-      exited = true
-      if (timeout) clearTimeout(timeout)
-      this.processHandles.delete(processHandle)
-      setImmediate(() =>
-        this.notify(peer, {
-          method: 'process/exited',
-          params: {
-            processHandle,
-            exitCode: 1,
-            stdout: streamOutput ? '' : Buffer.concat(stdout).toString('utf8'),
-            stdoutCapReached,
-            stderr: error.message,
-            stderrCapReached: false,
-          },
-        }),
-      )
-    })
-
-    child.once('close', (code, signal) => {
-      if (exited) return
-      exited = true
-      debugLog('process.spawn.close', {
-        processHandle,
-        code,
-        signal,
-        stdoutBytes,
-        stderrBytes,
-        stdoutCapReached,
-        stderrCapReached,
-      })
-      if (timeout) clearTimeout(timeout)
-      this.processHandles.delete(processHandle)
-      this.notify(peer, {
-        method: 'process/exited',
-        params: {
-          processHandle,
-          exitCode: code ?? 1,
-          stdout: streamOutput ? '' : Buffer.concat(stdout).toString('utf8'),
-          stdoutCapReached,
-          stderr: streamOutput ? '' : Buffer.concat(stderr).toString('utf8'),
-          stderrCapReached,
-        },
-      })
-    })
-    return {}
-  }
-
-  private processWriteStdin(params: Record<string, unknown>): unknown {
-    const processHandle = stringOr(params.processHandle, '')
-    const child = this.processHandles.get(processHandle)
-    if (!child) throw new Error(`unknown process handle: ${processHandle}`)
-    if (typeof params.deltaBase64 === 'string' && params.deltaBase64.length > 0) {
-      if ((child as any).__isPtyBridge) {
-        child.stdin?.write(JSON.stringify({ action: 'input', data: params.deltaBase64 }) + '\n')
-      } else {
-        child.stdin?.write(Buffer.from(params.deltaBase64, 'base64'))
-      }
-    }
-    if (params.closeStdin === true) child.stdin?.end()
-    return {}
-  }
-
-  private processResizePty(params: Record<string, unknown>): unknown {
-    const processHandle = stringOr(params.processHandle, '')
-    const child = this.processHandles.get(processHandle)
-    if (child && (child as any).__isPtyBridge) {
-      const size = (params.size as Record<string, unknown>) || {}
-      const cols = numberOr(size.cols, 80)
-      const rows = numberOr(size.rows, 24)
-      child.stdin?.write(JSON.stringify({ action: 'resize', cols, rows }) + '\n')
-    }
-    return {}
-  }
-
-  private processKill(params: Record<string, unknown>): unknown {
-    const processHandle = stringOr(params.processHandle, '')
-    const child = this.processHandles.get(processHandle)
-    if (!child) throw new Error(`unknown process handle: ${processHandle}`)
-    if ((child as any).__isPtyBridge) {
-      child.stdin?.write(JSON.stringify({ action: 'kill' }) + '\n')
-    }
-    child.kill('SIGTERM')
-    return {}
   }
 
   private marketplaceAdd(params: Record<string, unknown>): unknown {

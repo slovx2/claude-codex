@@ -2155,7 +2155,7 @@ test('remote utility methods use v2 response shapes', async () => {
   }
 })
 
-test('process/spawn supports shell strings, errors, and debug logs terminal lifecycle', async () => {
+test('process/spawn supports argv, errors, and debug logs terminal lifecycle', async () => {
   const home = await mkdtemp(join(tmpdir(), 'claude-codex-test-'))
   const debugLog = join(home, 'adapter-debug.jsonl')
   const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {
@@ -2176,7 +2176,7 @@ test('process/spawn supports shell strings, errors, and debug logs terminal life
         method: 'process/spawn',
         params: {
           processHandle: 'shell-process',
-          command: 'printf shell-ok',
+          command: ['/bin/sh', '-c', 'printf shell-ok'],
           cwd: process.cwd(),
           streamStdoutStderr: false,
         },
@@ -2205,20 +2205,9 @@ test('process/spawn supports shell strings, errors, and debug logs terminal life
         },
       }),
     )
-    await reader.nextResponse(2)
-    let errorExit: any = null
-    for (let i = 0; i < 100; i += 1) {
-      const message = await reader.next()
-      if (
-        message.method === 'process/exited' &&
-        message.params.processHandle === 'missing-process'
-      ) {
-        errorExit = message.params
-        break
-      }
-    }
-    assert.equal(errorExit.exitCode, 1)
-    assert.match(errorExit.stderr, /ENOENT|no such file/i)
+    const rejected = await reader.nextResponse(2)
+    assert.equal(rejected.error.code, -32000)
+    assert.match(rejected.error.message, /ENOENT|no such file/i)
 
     const logText = await readFile(debugLog, 'utf8')
     assert.match(logText, /"event":"process.spawn.start"/)

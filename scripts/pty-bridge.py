@@ -1,95 +1,123 @@
-import pty, os, sys, select, struct, fcntl, termios, signal, json, base64, threading, time
+"""PTY 字节桥：传播真实退出码、初始尺寸和 resize，并回收整个进程组。"""
 
-def set_winsize(fd, rows, cols):
+import argparse
+import base64
+import errno
+import fcntl
+import json
+import os
+import pty
+import select
+import signal
+import struct
+import sys
+import termios
+import time
+from typing import Any
+
+
+def resize(fd: int, rows: int, cols: int) -> None:
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+
+def kill_group(pid: int, sig: int) -> None:
     try:
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-    except Exception:
+        os.killpg(pid, sig)
+    except ProcessLookupError:
         pass
 
-def cleanup_child(pid):
-    try:
-        os.killpg(pid, signal.SIGTERM)
-    except Exception:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except Exception:
-            pass
-    for _ in range(10):
-        try:
-            res, _ = os.waitpid(pid, os.WNOHANG)
-            if res != 0:
-                return
-        except Exception:
-            return
-        time.sleep(0.02)
-    try:
-        os.killpg(pid, signal.SIGKILL)
-    except Exception:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except Exception:
-            pass
 
-def main():
-    if len(sys.argv) < 2:
-        sys.exit(1)
-    cmd = sys.argv[1:]
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--rows", type=int, default=24)
+    parser.add_argument("--cols", type=int, default=80)
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    command: list[str] = args.command
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        return 127
     master, slave = pty.openpty()
+    resize(slave, args.rows, args.cols)
     pid = os.fork()
     if pid == 0:
         os.close(master)
         os.setsid()
-        os.dup2(slave, 0)
-        os.dup2(slave, 1)
-        os.dup2(slave, 2)
-        os.close(slave)
+        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+        for descriptor in (0, 1, 2):
+            os.dup2(slave, descriptor)
+        if slave > 2:
+            os.close(slave)
         try:
-            os.execvp(cmd[0], cmd)
-        except Exception:
-            sys.exit(127)
+            os.execvp(command[0], command)
+        except OSError as error:
+            print(str(error), file=sys.stderr, flush=True)
+            os._exit(127)
     os.close(slave)
+    buffer = b""
+    status: int | None = None
+    stopping: float | None = None
+    output_open = True
 
-    def pty_reader():
-        try:
-            while True:
-                data = os.read(master, 4096)
-                if not data:
-                    break
-                msg = json.dumps({"stream": "stdout", "delta": base64.b64encode(data).decode("ascii")})
-                sys.stdout.write(msg + "\n")
-                sys.stdout.flush()
-        except Exception:
-            pass
+    def stop(_sig: int = 0, _frame: Any = None) -> None:
+        nonlocal stopping
+        if stopping is None:
+            stopping = time.monotonic()
+            kill_group(pid, signal.SIGTERM)
 
-    t = threading.Thread(target=pty_reader, daemon=True)
-    t.start()
-
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
     try:
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                cmd_obj = json.loads(line)
-                action = cmd_obj.get("action")
-                if action == "input":
-                    raw = base64.b64decode(cmd_obj.get("data", ""))
-                    os.write(master, raw)
-                elif action == "resize":
-                    cols = int(cmd_obj.get("cols", 80))
-                    rows = int(cmd_obj.get("rows", 24))
-                    set_winsize(master, rows, cols)
-                elif action == "kill":
-                    cleanup_child(pid)
-                    break
-            except Exception:
-                pass
-
-    except Exception:
-        pass
-
+        while status is None or output_open:
+            if status is None:
+                exited, child_status = os.waitpid(pid, os.WNOHANG)
+                if exited:
+                    status = child_status
+                    # Shell 退出后不能让后台孙进程继续持有 PTY。
+                    stop()
+            if stopping is not None and time.monotonic() - stopping >= 0.5:
+                kill_group(pid, signal.SIGKILL)
+            readers = ([master] if output_open else []) + ([0] if stopping is None else [])
+            readable, _, _ = select.select(readers, [], [], 0.05)
+            if master in readable:
+                try:
+                    data = os.read(master, 65536)
+                except OSError as error:
+                    if error.errno != errno.EIO:
+                        raise
+                    data = b""
+                if data:
+                    print(json.dumps({"stream": "stdout", "delta": base64.b64encode(data).decode("ascii")}), flush=True)
+                else:
+                    output_open = False
+            if 0 in readable:
+                data = os.read(0, 65536)
+                if not data:
+                    stop()
+                    continue
+                buffer += data
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    message: dict[str, Any] = json.loads(line)
+                    action = message.get("action")
+                    if action == "input":
+                        os.write(master, base64.b64decode(message["data"], validate=True))
+                    elif action == "resize":
+                        resize(master, int(message["rows"]), int(message["cols"]))
+                    elif action == "eof":
+                        os.write(master, b"\x04")
+                    elif action == "kill":
+                        stop()
+        assert status is not None
+        code = os.waitstatus_to_exitcode(status)
+        return code if code >= 0 else 128 - code
     finally:
-        cleanup_child(pid)
+        kill_group(pid, signal.SIGKILL)
+        if status is None:
+            os.waitpid(pid, 0)
+        os.close(master)
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

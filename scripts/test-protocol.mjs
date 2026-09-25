@@ -56,6 +56,7 @@ const result = spawnSync(
     'dist/test/native-protocol.test.mjs',
     'dist/test/native-interactions.test.mjs',
     'dist/test/native-mcp.test.mjs',
+    'dist/test/native-process.test.mjs',
   ],
   {
     stdio: 'inherit',
