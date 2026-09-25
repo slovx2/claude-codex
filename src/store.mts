@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
+import type { CatalogCursor } from './catalog-pagination.mjs'
 import { ProtocolError, type ThreadRuntimeSettings } from './protocol-contract.mjs'
 import type {
   ThreadItem,
@@ -289,7 +290,9 @@ export class SessionStore {
     options: {
       archived?: boolean | null
       limit?: number | null
-      cursor?: string | null
+      cursor?: CatalogCursor | null
+      modelProviders?: string[]
+      searchTerm?: string | null
       isPinned?: boolean | null
       cwd?: string | string[] | null
       includeEphemeral?: boolean
@@ -301,7 +304,7 @@ export class SessionStore {
       sortDirection?: 'asc' | 'desc'
     } = {},
   ): ThreadRecord[] {
-    const limit = Math.max(1, Math.min(Number(options.limit ?? 50), 200))
+    const limit = Math.max(1, Math.min(Number(options.limit ?? 50), 1001))
     const archived = options.archived === true ? 1 : 0
     const sortKey =
       options.sortKey === 'updated_at' ||
@@ -314,13 +317,23 @@ export class SessionStore {
         ? 'COALESCE(t.section_position, t.created_at)'
         : `t.${sortKey === 'created_at' ? 'created_at' : 'updated_at'}`
     const sortDirection = options.sortDirection === 'asc' ? 'ASC' : 'DESC'
-    const cursor = options.cursor
-      ? Number(options.cursor)
-      : sortDirection === 'ASC'
-        ? -1
-        : Number.MAX_SAFE_INTEGER
-    const where = ['t.archived = ?', `${sortExpression} ${sortDirection === 'ASC' ? '>' : '<'} ?`]
-    const args: unknown[] = [archived, cursor]
+    const where = ['t.archived = ?']
+    const args: unknown[] = [archived]
+    if (options.cursor) {
+      const comparator =
+        (sortDirection === 'ASC' ? '>' : '<') + (options.cursor.inclusive ? '=' : '')
+      // 时间戳精度为秒，必须加 ID 作为稳定排序键，否则同秒会话会在翻页时丢失。
+      where.push(`(${sortExpression}, t.id) ${comparator} (?, ?)`)
+      args.push(options.cursor.value, options.cursor.id)
+    }
+    if (options.modelProviders?.length) {
+      where.push(`t.model_provider IN (${options.modelProviders.map(() => '?').join(',')})`)
+      args.push(...options.modelProviders)
+    }
+    if (options.searchTerm) {
+      where.push("instr(lower(COALESCE(NULLIF(t.name,''), t.preview)), lower(?)) > 0")
+      args.push(options.searchTerm)
+    }
     if (options.isPinned != null) {
       where.push('t.is_pinned = ?')
       args.push(options.isPinned ? 1 : 0)

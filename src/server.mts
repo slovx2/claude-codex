@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { buildInfo } from './build-info.mjs'
+import { catalogPagination } from './catalog-pagination.mjs'
 import { listClaudeHooks, listClaudeSkills } from './claude-capabilities.mjs'
 import { FilesystemRpc } from './filesystem-rpc.mjs'
 import { callMcpTool, listMcpServerStatuses, readMcpConfig, readMcpResource } from './mcp.mjs'
@@ -952,7 +953,13 @@ export class CodexClaudeAppServer {
       params.sortKey === 'section_position'
         ? params.sortKey
         : 'created_at'
-    const sortDirection = params.sortDirection === 'asc' ? 'asc' : 'desc'
+    if (
+      params.sortKey != null &&
+      !['created_at', 'updated_at', 'recency_at', 'section_position'].includes(
+        String(params.sortKey),
+      )
+    )
+      throw new ProtocolError(-32602, 'sortKey 无效')
     const isPinned = typeof params.isPinned === 'boolean' ? params.isPinned : null
     const sectionId =
       params.sectionId === null
@@ -960,10 +967,11 @@ export class CodexClaudeAppServer {
         : typeof params.sectionId === 'string'
           ? params.sectionId
           : undefined
-    const threads = this.store.listThreads({
+    const modelProviders = Array.isArray(params.modelProviders)
+      ? params.modelProviders.filter((value): value is string => typeof value === 'string')
+      : []
+    const filters = {
       archived: (params.archived as boolean | null | undefined) ?? null,
-      limit: numberOr(params.limit, 50),
-      cursor: typeof params.cursor === 'string' ? params.cursor : null,
       isPinned,
       sectionId,
       cwd:
@@ -975,8 +983,18 @@ export class CodexClaudeAppServer {
       ancestorThreadId,
       sourceKinds,
       sortKey,
-      sortDirection,
+      modelProviders,
+      searchTerm: typeof params.searchTerm === 'string' ? params.searchTerm : null,
+    }
+    const pagination = catalogPagination(params, submissionHash(filters))
+    const found = this.store.listThreads({
+      ...filters,
+      sortKey,
+      sortDirection: pagination.sortDirection,
+      cursor: pagination.cursor,
+      limit: pagination.limit + 1,
     })
+    const threads = found.slice(0, pagination.limit)
     const last = threads.at(-1)
     const cursorValue = (thread: ThreadRecord): number =>
       sortKey === 'section_position'
@@ -987,8 +1005,12 @@ export class CodexClaudeAppServer {
     return {
       data: threads.map((thread) => this.toThread(thread, [])),
       nextCursor:
-        last && threads.length >= numberOr(params.limit, 50) ? String(cursorValue(last)) : null,
-      backwardsCursor: threads[0] ? String(cursorValue(threads[0])) : null,
+        last && found.length > pagination.limit
+          ? pagination.encode(cursorValue(last), last.id)
+          : null,
+      backwardsCursor: threads[0]
+        ? pagination.encode(cursorValue(threads[0]), threads[0].id, true)
+        : null,
     }
   }
 
@@ -1177,12 +1199,14 @@ export class CodexClaudeAppServer {
   }
 
   private threadLoadedList(params: Record<string, unknown>): unknown {
-    const loaded = Array.from(this.activePeerByThread.keys())
-    const limit = numberOr(params.limit, loaded.length || 50)
-    return {
-      data: loaded.slice(0, limit),
-      nextCursor: loaded.length > limit ? String(limit) : null,
-    }
+    const loaded = Array.from(this.activePeerByThread.keys()).sort()
+    const { data, nextCursor } = pageRecords(
+      loaded,
+      { ...params, sortDirection: 'asc' },
+      'loaded-threads',
+      (id) => id,
+    )
+    return { data, nextCursor }
   }
 
   // Codex App calls thread/inject_items to push hidden context into a thread's

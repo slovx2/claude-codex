@@ -54,6 +54,7 @@ const result = spawnSync(
     `--test-reporter-destination=${resolve(artifacts, 'junit.xml')}`,
     `--test-reporter-destination=${resolve(artifacts, 'executions.jsonl')}`,
     'dist/test/native-protocol.test.mjs',
+    'dist/test/native-catalog.test.mjs',
     'dist/test/native-interactions.test.mjs',
     'dist/test/native-mcp.test.mjs',
     'dist/test/native-process.test.mjs',
