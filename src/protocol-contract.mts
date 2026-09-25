@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { isApprovalPolicy } from './approval-policy.mjs'
+import { parseSandboxPolicy, type RuntimeSandboxPolicy } from './sandbox-policy.mjs'
 
 export class ProtocolError extends Error {
   readonly code: number
@@ -70,6 +71,7 @@ export function pageRecords<T>(
 }
 
 export interface ThreadRuntimeSettings {
+  sandboxPolicy?: RuntimeSandboxPolicy
   planMode?: boolean
   historyMode?: 'legacy' | 'paginated'
   dynamicTools?: unknown[]
@@ -83,6 +85,10 @@ export function rejectForeignModel(model: unknown): void {
 }
 
 export function validateRuntimePermissions(params: Record<string, unknown>): void {
+  if (params.permissions != null && (params.sandbox != null || params.sandboxPolicy != null))
+    throw new ProtocolError(-32602, '权限档位不能与沙箱策略同时设置')
+  if (params.sandbox != null && params.sandboxPolicy != null)
+    throw new ProtocolError(-32602, 'sandbox 与 sandboxPolicy 不能同时设置')
   if (params.approvalPolicy != null && !isApprovalPolicy(params.approvalPolicy))
     throw new ProtocolError(-32602, '未知审批策略')
   const mode = (params.collaborationMode as { mode?: unknown } | undefined)?.mode
@@ -98,9 +104,5 @@ export function validateRuntimePermissions(params: Record<string, unknown>): voi
     !['read-only', 'workspace-write', 'danger-full-access'].includes(String(params.sandbox))
   )
     throw new ProtocolError(-32602, '未知 sandbox 模式')
-  if (params.sandboxPolicy != null) {
-    const policy = params.sandboxPolicy as { type?: string }
-    if (!['readOnly', 'workspaceWrite', 'dangerFullAccess'].includes(String(policy.type)))
-      throw new ProtocolError(-32602, '不支持此 sandboxPolicy')
-  }
+  if (params.sandboxPolicy != null) parseSandboxPolicy(params.sandboxPolicy)
 }

@@ -3,6 +3,7 @@ import { type FSWatcher, readFileSync, watch, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { ApprovalPolicy } from './approval-policy.mjs'
+import { defaultSandboxPolicy } from './sandbox-policy.mjs'
 
 export { normalizeApprovalPolicy } from './approval-policy.mjs'
 
@@ -592,16 +593,7 @@ export function personalityPromptCue(personality: string | null): string | null 
 // chosen tier. Returning the right shape lets the App render the correct badge
 // (Read-only / Workspace / Full access) and stops it from over-prompting.
 export function sandboxEnvelope(mode: string | null, cwd: string): unknown {
-  if (mode === 'read-only') return { type: 'readOnly', networkAccess: false }
-  if (mode === 'danger-full-access') return { type: 'dangerFullAccess' }
-  // Default: workspace-write (or null/legacy).
-  return {
-    type: 'workspaceWrite',
-    writableRoots: [cwd],
-    networkAccess: true,
-    excludeTmpdirEnvVar: false,
-    excludeSlashTmp: false,
-  }
+  return defaultSandboxPolicy(mode, cwd)
 }
 
 export function permissionProfileList(params: Record<string, unknown>): unknown {

@@ -27,15 +27,21 @@ granular 的 sandbox_approval 对应命令审批，rules 对应规则强制审�
 
 配置文件和环境变量不得把客户端选定的只读或计划模式放宽。计划限制由每次调用的 PreToolUse 检查执行，而不只依赖返回标签。
 
+完整 `sandboxPolicy` 会保存 `writableRoots`、`networkAccess` 和两个临时目录排除选项，重启、恢复、分叉及元数据更新不能丢失这些边界。原生 Bash 每次经过 macOS Seatbelt 或 Linux bubblewrap，审批显示模型的原始命令；不能用 SDK 默认临时目录规则或用户 allow 规则扩大权限。计划模式对 Bash 强制只读和禁网，确认退出后恢复用户原有策略。缺少操作系统沙箱时明确拒绝执行，不降级放行。
+
 ## 自动化证据
 
 - PLAN-001：提问、输出计划、同意/拒绝退出、实际文件副作用；只读配置退出后仍不能写入。
 - PLAN-002：AI 进入计划、计划文件、重启恢复、显式退出后的真实执行。
 - APPROVAL-004：文件审批同意、拒绝、取消及完全访问免审批。
 - PERMISSION-004：严格 schema、untrusted、never + 只读、granular 开关及重启恢复；MCP 工具授权与表单开关分别验证真实文件副作用。
+- PERMISSION-005：完整沙箱策略跨进程恢复，真实文件工具验证工作区、额外目录、符号链接外逃及网络禁用。
+- PERMISSION-006：真实 Bash 验证目录越界、联网开关、只读与计划模式、完全访问，断言文件内容和本地站点请求数。
+- Tyrs Hand PERMISSION-007：双 SSH 入口验证移动端使用的 thread/settings/update 完整保存权限，切回完全访问生效，配置过程无模型请求。
 - Tyrs Hand PLAN-003：双真实 SSH 客户端经过 Worker/Hub，仲裁计划回答、命令和文件审批；同一个操作只能产生一次副作用。
 - FAILURE-003：对真实 CLI 发送 SIGSTOP/SIGKILL，验证有界终止、审批结束事件先于回合终态、迟到接受无副作用、恢复请求包含原生上下文及取消工具结果。工具意图须经 SDK 确认落盘才允许执行。
 
 运行 npm test 和 npm run test:protocol；后者禁止访问公网模型，只运行随包 SDK/CLI 和本地 Mock LLM，并输出 schema 检查、JUnit、wire 和模型请求证据。
+Linux 全部测试位于隔离网络 namespace。macOS 的 Bash 沙箱测试必须单独运行，因为 Seatbelt 不支持嵌套；此用例使用临时 HOME、白名单环境、虚拟密钥和强制回环的模型端点，并单独记录隔离方式和 JUnit，不能声称具有外层 OS 禁网。
 
 这些用例不代表完整产品发布验收。MCP OAuth、全部故障路径、真实桌面/手机 GUI 和完整协议矩阵仍受主项目 releaseReady 门禁约束，不能以协议驱动冒充 GUI 验收。

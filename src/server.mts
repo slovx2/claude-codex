@@ -35,6 +35,7 @@ import {
 } from './provider-loop-selection.mjs'
 import { recordRunEvent } from './run-registry.mjs'
 import { normalizeRuntimeType } from './runtime-config.mjs'
+import { defaultSandboxPolicy, policyFromParams } from './sandbox-policy.mjs'
 import {
   addedFileDiff,
   allSelectableModelOptions,
@@ -357,6 +358,7 @@ export class CodexClaudeAppServer {
         'thread/fork',
         'turn/start',
         'thread/settings/update',
+        'thread/metadata/update',
       ].includes(method)
     )
       validateRuntimePermissions(asRecord(params))
@@ -750,13 +752,11 @@ export class CodexClaudeAppServer {
       updatedAt: now,
       status: { type: 'idle' },
       approvalPolicy:
-        permissionProfile?.approvalPolicy ??
         normalizeApprovalPolicy(params.approvalPolicy) ??
+        permissionProfile?.approvalPolicy ??
         'never',
       sandboxMode:
-        permissionProfile?.sandboxMode ??
-        normalizeSandboxMode(params.sandbox) ??
-        'danger-full-access',
+        permissionProfile?.sandboxMode ?? sandboxFromTurnParams(params) ?? 'danger-full-access',
       permissionProfileId: permissionProfile?.id ?? null,
       ephemeral: isTitleOrHelper,
       threadSource: normalizeThreadSource(params.threadSource),
@@ -824,15 +824,17 @@ export class CodexClaudeAppServer {
     if (reasoningEffort) thread.reasoningEffort = reasoningEffort
     if (permissionProfileId) {
       thread.permissionProfileId = permissionProfileId
-      if (permissionProfile?.approvalPolicy)
+      if (params.approvalPolicy != null)
+        thread.approvalPolicy = normalizeApprovalPolicy(params.approvalPolicy)
+      else if (permissionProfile?.approvalPolicy)
         thread.approvalPolicy = permissionProfile.approvalPolicy
       if (permissionProfile?.sandboxMode) thread.sandboxMode = permissionProfile.sandboxMode
     } else {
       if (hasLegacyPermissionParams(params)) thread.permissionProfileId = null
       if (params.approvalPolicy != null)
         thread.approvalPolicy = normalizeApprovalPolicy(params.approvalPolicy)
-      if (typeof params.sandbox === 'string')
-        thread.sandboxMode = normalizeSandboxMode(params.sandbox)
+      const sandbox = sandboxFromTurnParams(params)
+      if (sandbox) thread.sandboxMode = sandbox
     }
     if (typeof params.threadSource === 'string')
       thread.threadSource = normalizeThreadSource(params.threadSource)
@@ -905,15 +907,14 @@ export class CodexClaudeAppServer {
       updatedAt: now,
       status: { type: 'idle' },
       approvalPolicy:
-        permissionProfilePolicy(permissionProfileIdFromParams(params))?.approvalPolicy ??
-        (params.approvalPolicy != null
+        params.approvalPolicy != null
           ? normalizeApprovalPolicy(params.approvalPolicy)
-          : parent.approvalPolicy),
+          : (permissionProfilePolicy(permissionProfileIdFromParams(params))?.approvalPolicy ??
+            parent.approvalPolicy),
       sandboxMode:
         permissionProfilePolicy(permissionProfileIdFromParams(params))?.sandboxMode ??
-        (typeof params.sandbox === 'string'
-          ? normalizeSandboxMode(params.sandbox)
-          : parent.sandboxMode),
+        sandboxFromTurnParams(params) ??
+        parent.sandboxMode,
       permissionProfileId:
         permissionProfileIdFromParams(params) ??
         (hasLegacyPermissionParams(params) ? null : (parent.permissionProfileId ?? null)),
@@ -1167,6 +1168,14 @@ export class CodexClaudeAppServer {
 
   private saveRuntimeSettings(threadId: string, params: Record<string, unknown>): void {
     const settings = this.store.threadSettings(threadId)
+    const thread = this.store.getThread(threadId)
+    if (!thread) throw new ProtocolError(-32602, '未知会话')
+    const cwd = typeof params.cwd === 'string' ? params.cwd : thread.cwd
+    settings.sandboxPolicy = policyFromParams(
+      params,
+      cwd,
+      settings.sandboxPolicy ?? defaultSandboxPolicy(thread.sandboxMode, cwd),
+    )
     const mode = asRecord(params.collaborationMode).mode
     if (mode === 'plan' || mode === 'default') settings.planMode = mode === 'plan'
     else if (typeof params.planMode === 'boolean') settings.planMode = params.planMode
@@ -1373,7 +1382,7 @@ export class CodexClaudeAppServer {
     const settings = this.store.threadSettings(threadId)
     const gitInfo = patchGitInfo(settings.gitInfo, params.gitInfo)
 
-    // Support dynamic model, reasoning effort, approval policy and sandbox updates
+    // 元数据更新也必须保存完整权限策略，不能只修改展示档位。
     const rawModel = modelFromParams(params, null)
     const model = rawModel ? normalizeSelectableModelId(rawModel, thread.model) : null
     const reasoningEffort = reasoningEffortFromParams(params, null)
@@ -1383,10 +1392,16 @@ export class CodexClaudeAppServer {
       thread.model = model
     }
     if (reasoningEffort) thread.reasoningEffort = reasoningEffort
+    const permissionProfileId = permissionProfileIdFromParams(params)
+    const permissionProfile = permissionProfilePolicy(permissionProfileId)
+    if (permissionProfileId) thread.permissionProfileId = permissionProfileId
+    else if (hasLegacyPermissionParams(params)) thread.permissionProfileId = null
+    if (permissionProfile?.approvalPolicy) thread.approvalPolicy = permissionProfile.approvalPolicy
+    if (permissionProfile?.sandboxMode) thread.sandboxMode = permissionProfile.sandboxMode
     if (params.approvalPolicy != null)
       thread.approvalPolicy = normalizeApprovalPolicy(params.approvalPolicy)
-    if (typeof params.sandbox === 'string')
-      thread.sandboxMode = normalizeSandboxMode(params.sandbox)
+    const sandboxMode = sandboxFromTurnParams(params)
+    if (sandboxMode && !permissionProfile) thread.sandboxMode = sandboxMode
     if (typeof params.isPinned === 'boolean') {
       const currentlyPinned = thread.sectionId === PINNED_SECTION_ID || thread.isPinned === true
       if (currentlyPinned !== params.isPinned) {
@@ -1414,6 +1429,7 @@ export class CodexClaudeAppServer {
       settings.gitInfo = gitInfo ?? null
       this.store.saveThreadSettings(threadId, settings)
     }
+    this.saveRuntimeSettings(threadId, params)
 
     return this.threadEnvelope(thread, this.store.listTurns(threadId))
   }
@@ -1454,7 +1470,7 @@ export class CodexClaudeAppServer {
     else if (hasLegacyPermissionParams(params)) thread.permissionProfileId = null
     if (permissionProfile?.approvalPolicy) thread.approvalPolicy = permissionProfile.approvalPolicy
     if (permissionProfile?.sandboxMode) thread.sandboxMode = permissionProfile.sandboxMode
-    if (params.approvalPolicy != null && !permissionProfile)
+    if (params.approvalPolicy != null)
       thread.approvalPolicy = normalizeApprovalPolicy(params.approvalPolicy)
     const sandboxMode = sandboxFromTurnParams(params)
     if (sandboxMode && !permissionProfile) thread.sandboxMode = sandboxMode
@@ -1475,7 +1491,9 @@ export class CodexClaudeAppServer {
           cwd: thread.cwd,
           approvalPolicy: thread.approvalPolicy ?? 'on-request',
           approvalsReviewer: 'user',
-          sandboxPolicy: sandboxEnvelope(thread.sandboxMode, thread.cwd),
+          sandboxPolicy:
+            this.store.threadSettings(threadId).sandboxPolicy ??
+            sandboxEnvelope(thread.sandboxMode, thread.cwd),
           activePermissionProfile: activePermissionProfileId
             ? { id: activePermissionProfileId, extends: null }
             : null,
@@ -1857,7 +1875,9 @@ export class CodexClaudeAppServer {
     if (reasoningEffort) thread.reasoningEffort = reasoningEffort
     if (permissionProfileId) {
       thread.permissionProfileId = permissionProfileId
-      if (permissionProfile?.approvalPolicy)
+      if (params.approvalPolicy != null)
+        thread.approvalPolicy = normalizeApprovalPolicy(params.approvalPolicy)
+      else if (permissionProfile?.approvalPolicy)
         thread.approvalPolicy = permissionProfile.approvalPolicy
       if (permissionProfile?.sandboxMode) thread.sandboxMode = permissionProfile.sandboxMode
     } else {
@@ -2203,8 +2223,8 @@ export class CodexClaudeAppServer {
     // the simpler sandbox string. Both are honoured.
     const permissionProfile = permissionProfilePolicy(permissionProfileIdFromParams(params))
     const approvalPolicy =
-      permissionProfile?.approvalPolicy ??
       (params.approvalPolicy != null ? normalizeApprovalPolicy(params.approvalPolicy) : null) ??
+      permissionProfile?.approvalPolicy ??
       thread.approvalPolicy
     const sandboxMode =
       permissionProfile?.sandboxMode ?? sandboxFromTurnParams(params) ?? thread.sandboxMode
@@ -2355,6 +2375,9 @@ export class CodexClaudeAppServer {
         outputFormat: claudeOutputFormat(params.outputSchema),
         approvalPolicy,
         sandboxMode,
+        sandboxPolicy:
+          this.store.threadSettings(thread.id).sandboxPolicy ??
+          defaultSandboxPolicy(sandboxMode, thread.cwd),
         systemPromptAddendum,
         planMode,
         imageInputs: Array.isArray(params._imageInputs)
@@ -4465,7 +4488,9 @@ export class CodexClaudeAppServer {
       instructionSources: [],
       approvalPolicy: thread.approvalPolicy ?? 'never',
       approvalsReviewer: 'user',
-      sandbox: sandboxEnvelope(thread.sandboxMode, thread.cwd),
+      sandbox:
+        this.store.threadSettings(thread.id).sandboxPolicy ??
+        sandboxEnvelope(thread.sandboxMode, thread.cwd),
       permissionProfile: null,
       activePermissionProfile: activePermissionProfileId
         ? { id: activePermissionProfileId, extends: null }

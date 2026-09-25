@@ -9,6 +9,7 @@ export class ProtocolClient {
   readonly trace: any[] = []
   stderr = ''
   private readonly home: string
+  private readonly modelEndpoint: string
   private protocolErrors: Error[] = []
   readonly process: ChildProcessWithoutNullStreams
   private sequence = 0
@@ -21,6 +22,15 @@ export class ProtocolClient {
 
   private constructor(home: string, baseURL: string, mock: boolean) {
     this.home = home
+    const endpoint = new URL(baseURL)
+    if (
+      endpoint.protocol !== 'http:' ||
+      endpoint.hostname !== '127.0.0.1' ||
+      endpoint.username ||
+      endpoint.password
+    )
+      throw new Error('协议测试只能连接回环 Mock LLM')
+    this.modelEndpoint = endpoint.origin
     // 白名单环境，不能继承个人模型凭据、代理或 Claude 配置。
     const env = {
       PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
@@ -189,6 +199,7 @@ export class ProtocolClient {
     }
     // 子进程只接收白名单测试环境；保存诊断用于区分协议失败与 SDK 启动/沙箱失败。
     await saveArtifact('runtime-diagnostics', {
+      modelEndpoint: this.modelEndpoint,
       stderr: this.redactDiagnostics(this.stderr.slice(-128_000)),
       debugLogs,
     })

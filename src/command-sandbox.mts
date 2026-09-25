@@ -7,6 +7,7 @@ export function sandboxCommand(
   command: string[],
   cwd: string,
   params: Record<string, unknown>,
+  defaultRoot = process.cwd(),
 ): string[] {
   if (params.permissionProfile != null && params.sandboxPolicy != null)
     throw new ProtocolError(-32602, 'permissionProfile 与 sandboxPolicy 不能同时使用')
@@ -35,7 +36,7 @@ export function sandboxCommand(
     if (policy.writableRoots != null && !Array.isArray(policy.writableRoots))
       throw new ProtocolError(-32602, 'writableRoots 必须是绝对路径数组')
     // 工作目录不能隐式扩大服务器的工作区授权；额外写入位置必须显式列出。
-    const requested = [process.cwd(), ...((policy.writableRoots as unknown[]) ?? [])]
+    const requested = [defaultRoot, ...((policy.writableRoots as unknown[]) ?? [])]
     if (policy.excludeSlashTmp !== true) requested.push('/tmp')
     if (policy.excludeTmpdirEnvVar !== true && process.env.TMPDIR)
       requested.push(process.env.TMPDIR)

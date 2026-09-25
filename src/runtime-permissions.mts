@@ -1,5 +1,7 @@
 import { realpathSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
+import { sandboxCommand } from './command-sandbox.mjs'
+import { defaultSandboxPolicy, type RuntimeSandboxPolicy } from './sandbox-policy.mjs'
 import type { RuntimeTurnContext } from './types.mjs'
 
 const readTools = new Set([
@@ -12,8 +14,46 @@ const readTools = new Set([
   'TodoWrite',
   'ListMcpResourcesTool',
   'ReadMcpResourceTool',
+  'WebFetch',
+  'WebSearch',
 ])
 const fileTools = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
+export type OriginalBashInputs = Map<string, Record<string, unknown>>
+
+function policyFor(context: RuntimeTurnContext): RuntimeSandboxPolicy {
+  return context.sandboxPolicy ?? defaultSandboxPolicy(context.sandboxMode, context.cwd)
+}
+
+function writableRoots(context: RuntimeTurnContext): string[] {
+  const policy = policyFor(context)
+  if (policy.type !== 'workspaceWrite') return []
+  return [
+    context.cwd,
+    ...policy.writableRoots,
+    ...(policy.excludeSlashTmp ? [] : ['/tmp']),
+    ...(policy.excludeTmpdirEnvVar || !process.env.TMPDIR ? [] : [process.env.TMPDIR]),
+  ].map(resolvedTarget)
+}
+
+function inside(root: string, target: string): boolean {
+  const child = relative(root, target)
+  return child !== '..' && !child.startsWith('../') && !isAbsolute(child)
+}
+
+export function sandboxedBashInput(context: RuntimeTurnContext, input: Record<string, unknown>) {
+  const policy = context.planMode
+    ? { type: 'readOnly' as const, networkAccess: false }
+    : policyFor(context)
+  if (policy.type === 'dangerFullAccess') return input
+  const command = sandboxCommand(
+    ['/bin/bash', '--noprofile', '--norc', '-c', String(input.command)],
+    context.cwd,
+    { sandboxPolicy: policy },
+    context.cwd,
+  )
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'"
+  return { ...input, command: command.map(quote).join(' '), dangerouslyDisableSandbox: false }
+}
 
 export function planDirectory(context: RuntimeTurnContext): string {
   // SDK plansDirectory 只接受项目内目录；每个线程仍有独立的计划命名空间。
@@ -56,31 +96,43 @@ export function deniedTool(
 ): string | null {
   // 原生计划文件保存在会话专属目录，只豁免此文件，不豁免项目源码或符号链接外逃。
   if (isPlanFile(context, name, input)) return null
+  const policy = policyFor(context)
+  if (
+    ['WebFetch', 'WebSearch'].includes(name) &&
+    (context.planMode || (policy.type !== 'dangerFullAccess' && !policy.networkAccess))
+  )
+    return '当前策略禁止工具访问网络'
+  if (name === 'Bash' && typeof input.command !== 'string') return '命令必须是字符串'
   if (context.planMode || context.sandboxMode === 'read-only')
-    return readTools.has(name) ? null : '当前会话只允许读取，不允许有副作用的工具'
+    return readTools.has(name) || name === 'Bash'
+      ? null
+      : '当前会话只允许读取，不允许有副作用的工具'
   if (context.sandboxMode !== 'danger-full-access' && context.sandboxMode !== 'workspace-write')
     return '未知权限模式，拒绝执行'
   if (context.sandboxMode === 'workspace-write' && fileTools.has(name)) {
     const target = input.file_path ?? input.notebook_path
     if (typeof target !== 'string') return '文件工具缺少目标路径'
-    const root = resolvedTarget(context.cwd)
-    const path = resolvedTarget(resolve(root, target))
-    const child = relative(root, path)
-    if (child === '..' || child.startsWith('../') || isAbsolute(child)) return '文件路径超出工作区'
+    const path = resolvedTarget(resolve(context.cwd, target))
+    if (!writableRoots(context).some((root) => inside(root, path))) return '文件路径超出授权目录'
   }
   return null
 }
 
-export function runtimePermissionOptions(context: RuntimeTurnContext): Record<string, unknown> {
+export function runtimePermissionOptions(
+  context: RuntimeTurnContext,
+  originals: OriginalBashInputs = new Map(),
+): Record<string, unknown> {
   // 计划模式用每次工具调用的动态 hook 限制；退出计划不能解除用户选择的沙箱。
-  const constrained = context.sandboxMode !== 'danger-full-access'
   return {
+    // SDK 的默认沙箱会额外放行临时目录，并合并用户 allow 规则。
+    // 模型命令统一经过精确策略的 OS 包装器，不能因原生设置而扩大边界。
+    sandbox: { enabled: false },
     hooks: {
       PreToolUse: [
         {
           hooks: [
-            async (event: Record<string, unknown>) => {
-              const reason =
+            async (event: Record<string, unknown>, toolUseId: string) => {
+              let reason =
                 event.agent_id &&
                 ['EnterPlanMode', 'ExitPlanMode'].includes(String(event.tool_name))
                   ? '子代理不能修改父会话的计划模式'
@@ -89,6 +141,16 @@ export function runtimePermissionOptions(context: RuntimeTurnContext): Record<st
                       String(event.tool_name),
                       (event.tool_input ?? {}) as Record<string, unknown>,
                     )
+              let updatedInput: Record<string, unknown> | undefined
+              if (!reason && event.tool_name === 'Bash') {
+                const input = (event.tool_input ?? {}) as Record<string, unknown>
+                try {
+                  updatedInput = sandboxedBashInput(context, input)
+                  originals.set(toolUseId, input)
+                } catch (error) {
+                  reason = '无法建立命令沙箱，禁止执行：' + String(error)
+                }
+              }
               return reason
                 ? {
                     hookSpecificOutput: {
@@ -108,26 +170,24 @@ export function runtimePermissionOptions(context: RuntimeTurnContext): Record<st
                       hookSpecificOutput: {
                         hookEventName: 'PreToolUse',
                         permissionDecision: 'ask',
+                        ...(updatedInput ? { updatedInput } : {}),
                       },
                     }
-                  : {}
+                  : updatedInput
+                    ? {
+                        hookSpecificOutput: {
+                          hookEventName: 'PreToolUse',
+                          updatedInput,
+                          ...(context.planMode || context.sandboxMode === 'read-only'
+                            ? { permissionDecision: 'allow' }
+                            : {}),
+                        },
+                      }
+                    : {}
             },
           ],
         },
       ],
     },
-    ...(constrained
-      ? {
-          sandbox: {
-            enabled: true,
-            failIfUnavailable: true,
-            allowUnsandboxedCommands: false,
-            filesystem: {
-              allowWrite: context.sandboxMode === 'read-only' ? [] : [context.cwd],
-            },
-            network: { allowedDomains: [], strictAllowlist: true, allowLocalBinding: false },
-          },
-        }
-      : {}),
   }
 }

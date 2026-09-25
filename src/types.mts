@@ -1,6 +1,7 @@
 import type { ElicitationRequest, ElicitationResult } from '@anthropic-ai/claude-agent-sdk'
 import type { ApprovalPolicy } from './approval-policy.mjs'
 import type { RuntimeBackendType } from './runtime-config.mjs'
+import type { RuntimeSandboxPolicy } from './sandbox-policy.mjs'
 
 export type JsonRpcId = string | number | null
 
@@ -298,6 +299,7 @@ export interface FileUpdateChange {
 }
 
 export interface RuntimeTurnContext {
+  sandboxPolicy?: RuntimeSandboxPolicy
   dynamicTools?: unknown[]
   threadId: string
   turnId: string

@@ -50,7 +50,14 @@ import { NativeMcpBridge } from './native-mcp-bridge.mjs'
 import { NativeProcess, succeedsWithin } from './native-process.mjs'
 import { NativeTurnInput } from './native-turn-input.mjs'
 import { ProtocolError, submissionHash } from './protocol-contract.mjs'
-import { isPlanFile, planDirectory, runtimePermissionOptions } from './runtime-permissions.mjs'
+import {
+  deniedTool,
+  isPlanFile,
+  type OriginalBashInputs,
+  planDirectory,
+  runtimePermissionOptions,
+  sandboxedBashInput,
+} from './runtime-permissions.mjs'
 import type {
   ClaudeRuntime,
   PermissionDecision,
@@ -350,6 +357,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     context: RuntimeTurnContext,
     abort: AbortController,
   ): Record<string, unknown> {
+    const originalBashInputs: OriginalBashInputs = new Map()
     const opts: Record<string, unknown> = {
       abortController: abort,
       includePartialMessages: true,
@@ -362,7 +370,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         ...sdkMcpStartupEnvironment(context.mcpServers),
         CLAUDE_CODE_MAX_RETRIES: '0',
       },
-      ...runtimePermissionOptions(context),
+      ...runtimePermissionOptions(context, originalBashInputs),
       settings: { plansDirectory: relative(context.cwd, planDirectory(context)) },
       disallowedTools: ['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup'],
       stderr: (data: string) => process.stderr.write(data),
@@ -447,6 +455,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     opts.canUseTool = this.makeCanUseTool(
       context,
       context.approvalPolicy === 'never' && context.sandboxMode === 'danger-full-access',
+      originalBashInputs,
     )
     const hooks = opts.hooks as Record<string, unknown>
     hooks.PostToolUse = [
@@ -497,7 +506,11 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     return opts
   }
 
-  private makeCanUseTool(context: RuntimeTurnContext, autoAllow: boolean) {
+  private makeCanUseTool(
+    context: RuntimeTurnContext,
+    autoAllow: boolean,
+    originalBashInputs: OriginalBashInputs = new Map(),
+  ) {
     return async (
       toolName: string,
       input: Record<string, unknown>,
@@ -568,7 +581,15 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         return { behavior: 'allow', updatedInput: input }
       }
       if (isPlanFile(context, toolName, input)) return { behavior: 'allow', updatedInput: input }
-      if (context.planMode) return { behavior: 'deny', message: '计划模式不能执行副作用' }
+      if (
+        toolName === 'Bash' &&
+        originalBashInputs.has(toolUseId) &&
+        context.approvalPolicy !== 'untrusted' &&
+        (context.planMode || context.sandboxMode === 'read-only')
+      )
+        return { behavior: 'allow', updatedInput: input }
+      if (context.planMode && !(toolName === 'Bash' && originalBashInputs.has(toolUseId)))
+        return { behavior: 'deny', message: '计划模式不能执行副作用' }
       if (autoAllow) return { behavior: 'allow', updatedInput: input }
       if (
         !allowsApproval(
@@ -603,13 +624,22 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
               requestId,
               toolUseId,
               toolName,
-              input,
+              input: originalBashInputs.get(toolUseId) ?? input,
             }),
           )
           .then(finish, () => finish({ decision: 'decline' }))
       })
 
       if (decision.decision === 'accept' || decision.decision === 'acceptForSession') {
+        if (decision.updatedInput) {
+          const updated = decision.updatedInput as Record<string, unknown>
+          const reason = deniedTool(context, toolName, updated)
+          if (reason) return { behavior: 'deny', message: reason }
+          return {
+            behavior: 'allow',
+            updatedInput: toolName === 'Bash' ? sandboxedBashInput(context, updated) : updated,
+          }
+        }
         return { behavior: 'allow', updatedInput: decision.updatedInput ?? input }
       }
       return { behavior: 'deny', message: 'denied by user' }

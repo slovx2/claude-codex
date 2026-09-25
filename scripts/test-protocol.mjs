@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const artifacts = resolve(process.env.PROTOCOL_ARTIFACT_DIR ?? '.artifacts/protocol')
@@ -63,6 +63,8 @@ const result = spawnSync(
     'dist/test/native-interactions.test.mjs',
     'dist/test/native-plan.test.mjs',
     'dist/test/native-permission-policy.test.mjs',
+    'dist/test/native-sandbox-policy.test.mjs',
+    ...(process.platform === 'darwin' ? [] : ['dist/test/native-bash-sandbox.test.mjs']),
     'dist/test/native-cli-failure.test.mjs',
     'dist/test/native-mcp.test.mjs',
     'dist/test/native-mcp-management.test.mjs',
@@ -80,4 +82,46 @@ const result = spawnSync(
   },
 )
 if (result.error) throw result.error
-process.exit(result.status ?? 1)
+let status = result.status ?? 1
+if (process.platform === 'darwin') {
+  // macOS 不支持嵌套 Seatbelt。此用例验证真正的工具级 OS 沙箱，单独运行。
+  // ProtocolClient 仍使用临时 HOME、虚拟凭据和固定回环 Mock URL。
+  writeFileSync(
+    resolve(artifacts, 'sandbox-isolation.json'),
+    JSON.stringify({
+      platform: process.platform,
+      outerNetworkIsolation: false,
+      toolIsolation: 'sandbox-exec',
+      modelEndpoint: 'loopback-only',
+      reason: 'macOS 不支持嵌套 Seatbelt；Linux 在网络 namespace 内执行同一用例',
+    }),
+  )
+  const sandbox = spawnSync(
+    process.execPath,
+    [
+      '--test',
+      '--test-reporter=spec',
+      '--test-reporter=junit',
+      `--test-reporter=${resolve('scripts/protocol-reporter.mjs')}`,
+      '--test-reporter-destination=stdout',
+      `--test-reporter-destination=${resolve(artifacts, 'junit-sandbox.xml')}`,
+      `--test-reporter-destination=${resolve(artifacts, 'executions-sandbox.jsonl')}`,
+      'dist/test/native-bash-sandbox.test.mjs',
+    ],
+    {
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        CODEX_SCHEMA_DIR: schema,
+        PROTOCOL_ARTIFACT_DIR: artifacts,
+        PROTOCOL_RUN_ID: runId,
+      },
+    },
+  )
+  if (sandbox.error) throw sandbox.error
+  const executions = resolve(artifacts, 'executions-sandbox.jsonl')
+  if (!existsSync(executions)) throw new Error('缺少真实 Bash 沙箱执行证据')
+  appendFileSync(resolve(artifacts, 'executions.jsonl'), readFileSync(executions))
+  status ||= sandbox.status ?? 1
+}
+process.exit(status)
