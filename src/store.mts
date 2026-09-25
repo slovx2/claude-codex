@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
+import { normalizeApprovalPolicy } from './approval-policy.mjs'
 import type { CatalogCursor } from './catalog-pagination.mjs'
 import { ProtocolError, type ThreadRuntimeSettings } from './protocol-contract.mjs'
 import type { ThreadGoal } from './thread-goals.mjs'
@@ -274,7 +275,9 @@ export class SessionStore {
         thread.createdAt,
         thread.updatedAt,
         JSON.stringify(thread.status),
-        thread.approvalPolicy,
+        typeof thread.approvalPolicy === 'object' && thread.approvalPolicy !== null
+          ? JSON.stringify(thread.approvalPolicy)
+          : thread.approvalPolicy,
         thread.sandboxMode,
         thread.permissionProfileId ?? null,
         thread.ephemeral ? 1 : 0,
@@ -1108,7 +1111,11 @@ export class SessionStore {
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
       status: JSON.parse(String(row.status_json)),
-      approvalPolicy: row.approval_policy == null ? null : String(row.approval_policy),
+      approvalPolicy: normalizeApprovalPolicy(
+        typeof row.approval_policy === 'string' && row.approval_policy.startsWith('{')
+          ? JSON.parse(row.approval_policy)
+          : row.approval_policy,
+      ),
       sandboxMode: row.sandbox_mode == null ? null : String(row.sandbox_mode),
       permissionProfileId:
         row.permission_profile_id == null ? null : String(row.permission_profile_id),

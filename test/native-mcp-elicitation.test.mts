@@ -165,6 +165,11 @@ test('MCP-004：中断真实 MCP 表单后迟到接受不能产生文件或模�
     assert.ok(history.thread.turns[0].items.every((item: any) => item.status !== 'inProgress'))
     await assert.rejects(readFile(file), { code: 'ENOENT' })
     assert.equal(client.trace.filter((item) => item.method === 'serverRequest/resolved').length, 1)
+    assert.ok(
+      client.trace.findIndex((item) => item.method === 'serverRequest/resolved') <
+        client.trace.findIndex((item) => item.method === 'turn/completed'),
+      '取消请求必须先于回合终态解决',
+    )
     assert.equal(model.requests.length, 1)
     model.assertConsumed()
   } finally {

@@ -25,6 +25,7 @@ jobs:
       - run: npm test
         env:
           CODEX_SCHEMA_DIR: ${{ github.workspace }}/.artifacts/schema
+          PROTOCOL_ARTIFACT_DIR: ${{ github.workspace }}/.artifacts/protocol/unit
       - name: Real SDK and local Mock LLM protocol contract
         run: npm run test:protocol
         env:

@@ -20,13 +20,14 @@ import type { RuntimeHandlers } from './types.mjs'
 
 // 连接仍进入真实 SDK 的 MCP 工具执行链；交互直接回到 Hub，避免 CLI 丢弃 URL 和元数据。
 export class NativeMcpBridge {
-  private readonly clients = new Set<Client>()
+  private readonly clients = new Map<string, Client>()
+  private readonly closing = new Map<Client, Promise<void>>()
   private closed = false
 
   async connect(
     raw: unknown,
     cwd: string,
-    handlers: RuntimeHandlers,
+    handlers: Pick<RuntimeHandlers, 'onElicitationRequest'>,
     signal: AbortSignal,
   ): Promise<Record<string, McpSdkServerConfigWithInstance>> {
     const result: Record<string, McpSdkServerConfigWithInstance> = {}
@@ -39,7 +40,7 @@ export class NativeMcpBridge {
           capabilities: { elicitation: { form: {}, url: {} } },
         },
       )
-      this.clients.add(client)
+      this.clients.set(name, client)
       client.setRequestHandler(ElicitRequestSchema, async (request, extra) => {
         const combined = AbortSignal.any([signal, extra.signal])
         combined.throwIfAborted()
@@ -52,7 +53,7 @@ export class NativeMcpBridge {
         return response
       })
       const cancel = () => {
-        void client.close().catch(() => {})
+        void this.closeClient(client).catch(() => {})
       }
       signal.addEventListener('abort', cancel, { once: true })
       client.onclose = () => signal.removeEventListener('abort', cancel)
@@ -118,9 +119,26 @@ export class NativeMcpBridge {
 
   async close(): Promise<void> {
     this.closed = true
-    const clients = [...this.clients]
+    const clients = [...this.clients.values()]
     this.clients.clear()
-    await Promise.all(clients.map((client) => client.close()))
+    for (const client of clients) this.closeClient(client)
+    await Promise.all(this.closing.values())
+  }
+
+  private closeClient(client: Client): Promise<void> {
+    // SDK transport 的第二次 close 会立即返回；必须复用首次关闭的完成屏障。
+    let pending = this.closing.get(client)
+    if (!pending) {
+      pending = client.close()
+      this.closing.set(client, pending)
+    }
+    return pending
+  }
+
+  client(name: string): Client {
+    const client = this.clients.get(name)
+    if (!client || this.closed) throw new Error('MCP 连接未建立或已关闭')
+    return client
   }
 }
 

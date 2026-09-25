@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { isApprovalPolicy } from './approval-policy.mjs'
 
 export class ProtocolError extends Error {
   readonly code: number
@@ -69,6 +70,7 @@ export function pageRecords<T>(
 }
 
 export interface ThreadRuntimeSettings {
+  planMode?: boolean
   historyMode?: 'legacy' | 'paginated'
   dynamicTools?: unknown[]
   config?: Record<string, unknown>
@@ -81,6 +83,11 @@ export function rejectForeignModel(model: unknown): void {
 }
 
 export function validateRuntimePermissions(params: Record<string, unknown>): void {
+  if (params.approvalPolicy != null && !isApprovalPolicy(params.approvalPolicy))
+    throw new ProtocolError(-32602, '未知审批策略')
+  const mode = (params.collaborationMode as { mode?: unknown } | undefined)?.mode
+  if (mode != null && mode !== 'plan' && mode !== 'default')
+    throw new ProtocolError(-32602, '未知协作模式')
   if (
     params.permissions != null &&
     ![':read-only', ':workspace', ':danger-full-access'].includes(String(params.permissions))

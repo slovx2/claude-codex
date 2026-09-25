@@ -4,11 +4,17 @@ import { Ajv } from 'ajv'
 import { ProtocolError } from './protocol-contract.mjs'
 
 export function elicitationParams(
-  request: ElicitationRequest,
+  request: ElicitationRequest & { _meta?: Record<string, unknown> },
   threadId: string,
-  turnId: string,
+  turnId: string | null,
 ): Record<string, unknown> {
-  const common = { threadId, turnId, serverName: request.serverName, message: request.message }
+  const common = {
+    threadId,
+    turnId,
+    serverName: request.serverName,
+    message: request.message,
+    ...(request._meta === undefined ? {} : { _meta: request._meta }),
+  }
   if (request.mode === 'url') {
     if (!request.url || !request.elicitationId)
       throw new ProtocolError(-32602, 'URL 交互缺少地址或标识')

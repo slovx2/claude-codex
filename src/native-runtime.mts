@@ -1,4 +1,11 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, realpathSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+} from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -35,12 +42,13 @@ if (!process.env.ANTHROPIC_BETAS) {
 // installed via optionalDependencies.
 
 import type { OnElicitation, Query } from '@anthropic-ai/claude-agent-sdk'
+import { type ApprovalPolicy, allowsApproval, toolApprovalFlow } from './approval-policy.mjs'
 import { dynamicToolServer } from './dynamic-tools.mjs'
 import { sdkMcpStartupEnvironment } from './mcp-config.mjs'
 import { NativeMcpBridge } from './native-mcp-bridge.mjs'
 import { NativeTurnInput } from './native-turn-input.mjs'
 import { ProtocolError, submissionHash } from './protocol-contract.mjs'
-import { runtimePermissionOptions } from './runtime-permissions.mjs'
+import { isPlanFile, planDirectory, runtimePermissionOptions } from './runtime-permissions.mjs'
 import type {
   ClaudeRuntime,
   PermissionDecision,
@@ -130,8 +138,14 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
   private inputs = new Map<string, NativeTurnInput>()
   private permissions = new Map<string, PendingPermission>()
   private aborts = new Map<string, AbortController>()
+  private cleanup = new Map<string, Promise<void>>()
 
   async runTurn(context: RuntimeTurnContext, handlers: RuntimeHandlers): Promise<void> {
+    let cleaned!: () => void
+    const cleanup = new Promise<void>((resolve) => {
+      cleaned = resolve
+    })
+    this.cleanup.set(context.threadId, cleanup)
     const input = new NativeTurnInput(this.buildPromptIterable(context))
     const abort = new AbortController()
     const mcp = new NativeMcpBridge()
@@ -218,7 +232,12 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       input.close()
       if (this.inputs.get(context.threadId) === input) this.inputs.delete(context.threadId)
       if (this.aborts.get(context.threadId) === abort) this.aborts.delete(context.threadId)
-      await mcp.close()
+      try {
+        await mcp.close()
+      } finally {
+        if (this.cleanup.get(context.threadId) === cleanup) this.cleanup.delete(context.threadId)
+        cleaned()
+      }
     }
   }
 
@@ -238,27 +257,19 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
   }
 
   async interrupt(threadId: string): Promise<void> {
+    const cleanup = this.cleanup.get(threadId)
+    const pending = [...this.turns.values()].find((turn) => turn.context.threadId === threadId)
+    // SDK 的 abort 先关闭 stdin，CLI 仍有退出宽限期；此时释放 MCP
+    // 会把错误工具结果送回尚未中断的模型循环。先等待 CLI 确认中断。
+    if (pending) await pending.query.interrupt()
     this.inputs.get(threadId)?.close()
     this.aborts.get(threadId)?.abort()
-    for (const pending of this.turns.values()) {
-      if (pending.context.threadId === threadId) {
-        pending.input.close()
-        // 先停止 SDK，避免清理交互时产生的工具结果触发下一次模型请求。
-        pending.abort.abort()
-        await this.stopWorkflowTasks(pending)
-        await pending.query.interrupt().catch(() => {})
-      }
-    }
+    if (pending) await this.stopWorkflowTasks(pending)
+    await cleanup
   }
 
   async stop(): Promise<void> {
-    for (const input of this.inputs.values()) input.close()
-    for (const abort of this.aborts.values()) abort.abort()
-    for (const pending of this.turns.values()) {
-      pending.input.close()
-      pending.abort.abort()
-      await this.stopWorkflowTasks(pending)
-    }
+    await Promise.all([...this.cleanup.keys()].map((threadId) => this.interrupt(threadId)))
     this.turns.clear()
     this.permissions.clear()
   }
@@ -331,6 +342,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         CLAUDE_CODE_MAX_RETRIES: '0',
       },
       ...runtimePermissionOptions(context),
+      settings: { plansDirectory: planDirectory(context) },
       disallowedTools: ['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup'],
       stderr: (data: string) => process.stderr.write(data),
       onElicitation: (async (request, { signal }) => {
@@ -360,15 +372,9 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       opts.allowedTools = context.allowedTools
     if (context.outputFormat) opts.outputFormat = context.outputFormat
 
-    // Codex App's pinned policies map onto Claude SDK's permissionMode. plan
-    // mode supersedes everything. Relay rejects the SDK's dangerous bypass
-    // flag outside a recognized container sandbox, so App-level Full Access
-    // stays in default mode and auto-allows through canUseTool below. An
-    // explicit env override can still opt into bypassPermissions.
-    const permissionModeOverride = configuredPermissionMode()
+    // 完全访问由回调授权，支持 root 部署且保留计划确认和用户提问。
     const mode = derivePermissionMode(context.approvalPolicy, context.sandboxMode, context.planMode)
     opts.permissionMode = mode
-    if (mode === 'bypassPermissions') opts.allowDangerouslySkipPermissions = true
 
     if (parseWorkflowCommand(context.prompt)?.type === 'run') {
       opts.settings = {
@@ -378,17 +384,39 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       }
     }
 
-    // Per-tool approval round-trip with Codex App. In App-level Full Access,
-    // the bridge auto-allows every permission request without surfacing a UI
-    // prompt. Explicit SDK bypass omits the callback because Claude never calls
-    // it in that mode.
-    if (mode !== 'plan' && mode !== 'bypassPermissions') {
-      const appFullAccess =
-        permissionModeOverride === null &&
-        (context.approvalPolicy === 'never' || context.sandboxMode === 'danger-full-access')
-      const autoAllow = appFullAccess || mode === 'dontAsk'
-      opts.canUseTool = this.makeCanUseTool(context, autoAllow)
-    }
+    // 即使完全访问也保留提问与计划确认；只对明确的完全访问组合自动授权。
+    opts.canUseTool = this.makeCanUseTool(
+      context,
+      context.approvalPolicy === 'never' && context.sandboxMode === 'danger-full-access',
+    )
+    const hooks = opts.hooks as Record<string, unknown>
+    hooks.PostToolUse = [
+      {
+        matcher: 'EnterPlanMode|ExitPlanMode|Write|Edit',
+        hooks: [
+          async (event: Record<string, unknown>) => {
+            const pending = this.turns.get(context.turnId)
+            if (!pending || pending.abort.signal.aborted || event.agent_id) return {}
+            const input = (event.tool_input ?? {}) as Record<string, unknown>
+            if (isPlanFile(context, String(event.tool_name), input)) {
+              await pending.handlers.onEvent({
+                type: 'plan_text',
+                text: readFileSync(String(input.file_path), 'utf8'),
+              })
+              return {}
+            }
+            if (event.tool_name !== 'EnterPlanMode' && event.tool_name !== 'ExitPlanMode') return {}
+            const enabled = event.tool_name === 'EnterPlanMode'
+            await pending.query.setPermissionMode(
+              derivePermissionMode(context.approvalPolicy, context.sandboxMode, enabled),
+            )
+            context.planMode = enabled
+            await pending.handlers.onEvent({ type: 'plan_mode', enabled })
+            return {}
+          },
+        ],
+      },
+    ]
 
     // Project + developer + personality instructions ride along as a system
     // prompt append, preserving Claude Code's built-in preset.
@@ -414,7 +442,12 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     return async (
       toolName: string,
       input: Record<string, unknown>,
-      options: { toolUseID?: string; signal: AbortSignal },
+      options: {
+        toolUseID?: string
+        signal: AbortSignal
+        agentID?: string
+        matchedAskRule?: unknown
+      },
     ): Promise<
       { behavior: 'allow'; updatedInput?: unknown } | { behavior: 'deny'; message: string }
     > => {
@@ -422,13 +455,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       const pending = this.turns.get(context.turnId)
       if (!pending) return { behavior: 'deny', message: 'turn already finished' }
 
-      // AskUserQuestion is a CLI built-in that, in SDK mode, has no TUI to
-      // render the question. Bridge it to Codex's native request_user_input
-      // primitive so the App can show a structured choice card. We return
-      // the user's answer back to the model through canUseTool's deny
-      // channel — denying suppresses the built-in CLI rendering while the
-      // `message` body carries the formatted AskUserQuestionOutput JSON so
-      // Claude reads the answer just like a normal tool_result.
+      // 用 SDK 正式的 updatedInput 返回答案，不能伪装成工具拒绝。
       if (toolName === 'AskUserQuestion') {
         try {
           const requestId = `${context.threadId}:${context.turnId}:askq:${toolUseId}`
@@ -445,18 +472,52 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
             toolUseId,
             questions,
           })
+          if (options.signal.aborted) return { behavior: 'deny', message: '提问已取消' }
           const formatted = formatAskUserQuestionAnswers(input, questions, answers)
-          return { behavior: 'deny', message: formatted }
+          return { behavior: 'allow', updatedInput: JSON.parse(formatted) }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
           return { behavior: 'deny', message: `AskUserQuestion failed: ${msg}` }
         }
       }
 
-      // Auto-allow when the App has selected Full Access / bypassPermissions —
-      // matches the previous behaviour of skipping the canUseTool round-trip
-      // entirely for those modes.
-      if (autoAllow) return { behavior: 'allow' }
+      if (options.agentID && (toolName === 'EnterPlanMode' || toolName === 'ExitPlanMode'))
+        return { behavior: 'deny', message: '子代理不能修改父会话的计划模式' }
+      if (toolName === 'EnterPlanMode') return { behavior: 'allow', updatedInput: input }
+      if (toolName === 'ExitPlanMode') {
+        const answers = await pending.handlers.onUserInputRequest?.({
+          type: 'user_input_request',
+          toolName: 'ExitPlanMode',
+          requestId: `${context.turnId}:exit-plan:${toolUseId}`,
+          toolUseId,
+          questions: [
+            {
+              id: 'execute_plan',
+              header: '执行计划',
+              question: '计划已完成，是否退出计划模式并按当前权限执行？',
+              isOther: true,
+              isSecret: false,
+              options: [
+                { label: '执行计划', description: '退出计划模式，继续执行已确认的计划。' },
+                { label: '继续规划', description: '保持计划模式，不执行修改。' },
+              ],
+            },
+          ],
+        })
+        if (options.signal.aborted || answers?.answers.execute_plan?.answers.join() !== '执行计划')
+          return { behavior: 'deny', message: '用户尚未确认执行，继续保持计划模式。' }
+        return { behavior: 'allow', updatedInput: input }
+      }
+      if (isPlanFile(context, toolName, input)) return { behavior: 'allow', updatedInput: input }
+      if (context.planMode) return { behavior: 'deny', message: '计划模式不能执行副作用' }
+      if (autoAllow) return { behavior: 'allow', updatedInput: input }
+      if (
+        !allowsApproval(
+          context.approvalPolicy,
+          options.matchedAskRule ? 'rules' : toolApprovalFlow(toolName),
+        )
+      )
+        return { behavior: 'deny', message: '当前审批策略禁止发起此类权限请求' }
 
       const requestId = `${context.threadId}:${context.turnId}:${toolName}:${toolUseId}`
       // Subagent-aware approval suppression: when Claude is mid-subagent we
@@ -1378,37 +1439,15 @@ function rateLimitNotice(info: Record<string, unknown> | undefined): string {
 // permissionMode. This preserves the adapter's old sidecar mapping while using
 // the native TS SDK runtime.
 function derivePermissionMode(
-  approvalPolicy: string | null,
+  approvalPolicy: ApprovalPolicy | null,
   sandboxMode: string | null,
   planMode: boolean,
 ): 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto' {
-  // Env-level override always wins.
+  // 会话选择是权限来源，环境变量不能覆盖客户端授权。
   if (planMode) return 'plan'
-  if (sandboxMode === 'danger-full-access' || approvalPolicy === 'never') return 'default'
-  if (approvalPolicy === 'on-failure') return 'acceptEdits'
+  if (sandboxMode === 'danger-full-access' && approvalPolicy === 'never') return 'default'
+  if (approvalPolicy === 'never') return 'dontAsk'
   return 'default'
-}
-
-function configuredPermissionMode():
-  | 'default'
-  | 'acceptEdits'
-  | 'bypassPermissions'
-  | 'plan'
-  | 'dontAsk'
-  | 'auto'
-  | null {
-  const value = process.env.CLAUDE_CODEX_PERMISSION_MODE
-  if (
-    value === 'default' ||
-    value === 'acceptEdits' ||
-    value === 'bypassPermissions' ||
-    value === 'plan' ||
-    value === 'dontAsk' ||
-    value === 'auto'
-  ) {
-    return value
-  }
-  return null
 }
 
 // Subagent tool detection — same allowlist as Python's is_subagent_tool and
@@ -1513,10 +1552,7 @@ export function parseAskUserQuestions(input: Record<string, unknown>): UserInput
   return out
 }
 
-// Build the AskUserQuestionOutput JSON Claude expects. We push it through the
-// canUseTool deny `message` field — Claude's model reads denied-tool messages
-// as part of the tool_result, so the structured JSON arrives in the same
-// schema the model would have seen had the CLI rendered the question itself.
+// 转换为原生 AskUserQuestion 的 updatedInput。
 export function formatAskUserQuestionAnswers(
   input: Record<string, unknown>,
   questions: UserInputQuestion[],

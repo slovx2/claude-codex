@@ -4,13 +4,16 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { allowsApproval } from './approval-policy.mjs'
 import { buildInfo } from './build-info.mjs'
 import { catalogPagination } from './catalog-pagination.mjs'
 import { listClaudeHooks, listClaudeSkills } from './claude-capabilities.mjs'
 import { dynamicToolResult } from './dynamic-tool-result.mjs'
 import { FilesystemRpc } from './filesystem-rpc.mjs'
-import { callMcpTool, listMcpServerStatuses, readMcpConfig, readMcpResource } from './mcp.mjs'
+import { readMcpConfig } from './mcp.mjs'
+import { sdkMcpServers } from './mcp-config.mjs'
 import { elicitationParams, elicitationResponse } from './mcp-elicitation.mjs'
+import { type McpCallbacks, McpRpc, type McpScope } from './mcp-rpc.mjs'
 import { PendingInteractions } from './pending-interactions.mjs'
 import { ProcessRpc } from './process-rpc.mjs'
 import {
@@ -219,6 +222,7 @@ export class CodexClaudeAppServer {
   private commandProcesses = new Map<string, ChildProcess>()
   private readonly processes = new ProcessRpc()
   private readonly filesystem = new FilesystemRpc()
+  private readonly mcp = new McpRpc()
   private elicitationCounts = new Map<string, number>()
   private configModel = defaultSelectableModelId()
   private configReasoningEffort =
@@ -267,6 +271,7 @@ export class CodexClaudeAppServer {
   }
 
   closePeer(peer: RpcPeer): void {
+    this.mcp.closePeer(peer.id)
     this.pendingInteractions.cancelPeer(peer.id)
     this.filesystem.closePeer(peer.id)
     this.processes.closePeer(peer.id)
@@ -279,7 +284,7 @@ export class CodexClaudeAppServer {
   async stop(): Promise<void> {
     if (this.stopped) return
     this.stopped = true
-    this.pendingInteractions.close()
+    await this.mcp.close()
     this.filesystem.close()
     await this.processes.close()
     // Child turns are created directly from Task/Workflow events and are not
@@ -289,6 +294,7 @@ export class CodexClaudeAppServer {
     this.finalizeActiveSubagentsForShutdown('server stopped')
     this.completeActiveTurns('interrupted', { message: 'server stopped' })
     await this.runtime.stop()
+    this.pendingInteractions.close()
     this.store.close()
   }
 
@@ -411,12 +417,19 @@ export class CodexClaudeAppServer {
             method: 'account/updated',
             params: { authMode: 'apikey', planType: null },
           })
-          for (const status of readMcpConfig().startupStatuses) {
-            this.notify(peer, {
-              method: 'mcpServer/startupStatus/updated',
-              params: { name: status.name, status: status.status, error: status.error ?? null },
+          void Promise.resolve()
+            .then(() => this.mcpProbe(peer, this.mcpScope()))
+            .catch((error: unknown) => {
+              this.notify(peer, {
+                method: 'mcpServer/startupStatus/updated',
+                params: {
+                  name: 'MCP configuration',
+                  status: 'failed',
+                  error: String(error),
+                  threadId: null,
+                },
+              })
             })
-          }
         })
         return {
           userAgent: codexUserAgent(
@@ -561,7 +574,12 @@ export class CodexClaudeAppServer {
       case 'experimentalFeature/enablement/set':
         return { enablement: asRecord(asRecord(params).enablement) }
       case 'collaborationMode/list':
-        return method === 'collaborationMode/list' ? { data: [] } : {}
+        return {
+          data: [
+            { name: '直接执行', mode: 'default', model: null, reasoning_effort: null },
+            { name: '先做计划', mode: 'plan', model: null, reasoning_effort: null },
+          ],
+        }
       case 'mock/experimentalMethod':
         return {
           echoed: typeof asRecord(params).value === 'string' ? asRecord(params).value : null,
@@ -612,24 +630,18 @@ export class CodexClaudeAppServer {
       case 'app/list':
         return { data: [], nextCursor: null }
       case 'mcpServer/oauth/login':
-        return {
-          authorizationUrl: `https://localhost.invalid/claude-codex/mcp-oauth/${encodeURIComponent(stringOr(asRecord(params).name, 'server'))}`,
-        }
+        throw new ProtocolError(-32001, 'MCP OAuth 尚未配置授权流程，不能提供虚假登录地址')
       case 'config/mcpServer/reload':
-        return {}
+        return this.mcpReload(peer)
       case 'mcpServerStatus/list':
-        return listMcpServerStatuses().then((data) => ({ data, nextCursor: null }))
+        return this.mcp.statuses(
+          this.mcpScope(asRecord(params).threadId),
+          asRecord(params),
+          this.mcpCallbacks(peer, asRecord(params).threadId),
+        )
       case 'mcpServer/resource/read':
-        return readMcpResource(
-          stringOr(asRecord(params).server, ''),
-          stringOr(asRecord(params).uri, ''),
-        )
       case 'mcpServer/tool/call':
-        return callMcpTool(
-          stringOr(asRecord(params).server, ''),
-          stringOr(asRecord(params).tool, ''),
-          asRecord(params).arguments ?? {},
-        )
+        return this.mcpCall(peer, method, asRecord(params))
       case 'windowsSandbox/setupStart':
         return { started: false }
       case 'windowsSandbox/readiness':
@@ -817,7 +829,7 @@ export class CodexClaudeAppServer {
       if (permissionProfile?.sandboxMode) thread.sandboxMode = permissionProfile.sandboxMode
     } else {
       if (hasLegacyPermissionParams(params)) thread.permissionProfileId = null
-      if (typeof params.approvalPolicy === 'string')
+      if (params.approvalPolicy != null)
         thread.approvalPolicy = normalizeApprovalPolicy(params.approvalPolicy)
       if (typeof params.sandbox === 'string')
         thread.sandboxMode = normalizeSandboxMode(params.sandbox)
@@ -840,6 +852,8 @@ export class CodexClaudeAppServer {
       ephemeral: thread.ephemeral,
     })
     this.activePeerByThread.set(threadId, peer)
+    // 恢复时主动回显持久化的计划与审批设置，客户端不能按本地默认值猜测。
+    this.threadSettingsUpdate(peer, { threadId })
     this.bindPeerToDescendants(peer, threadId)
     const usage = this.store.threadUsage(threadId)
     if (usage)
@@ -892,7 +906,7 @@ export class CodexClaudeAppServer {
       status: { type: 'idle' },
       approvalPolicy:
         permissionProfilePolicy(permissionProfileIdFromParams(params))?.approvalPolicy ??
-        (typeof params.approvalPolicy === 'string'
+        (params.approvalPolicy != null
           ? normalizeApprovalPolicy(params.approvalPolicy)
           : parent.approvalPolicy),
       sandboxMode:
@@ -1153,6 +1167,9 @@ export class CodexClaudeAppServer {
 
   private saveRuntimeSettings(threadId: string, params: Record<string, unknown>): void {
     const settings = this.store.threadSettings(threadId)
+    const mode = asRecord(params.collaborationMode).mode
+    if (mode === 'plan' || mode === 'default') settings.planMode = mode === 'plan'
+    else if (typeof params.planMode === 'boolean') settings.planMode = params.planMode
     if (params.historyMode != null) {
       if (params.historyMode !== 'legacy' && params.historyMode !== 'paginated')
         throw new ProtocolError(-32602, 'historyMode 无效')
@@ -1366,7 +1383,7 @@ export class CodexClaudeAppServer {
       thread.model = model
     }
     if (reasoningEffort) thread.reasoningEffort = reasoningEffort
-    if (typeof params.approvalPolicy === 'string')
+    if (params.approvalPolicy != null)
       thread.approvalPolicy = normalizeApprovalPolicy(params.approvalPolicy)
     if (typeof params.sandbox === 'string')
       thread.sandboxMode = normalizeSandboxMode(params.sandbox)
@@ -1437,12 +1454,13 @@ export class CodexClaudeAppServer {
     else if (hasLegacyPermissionParams(params)) thread.permissionProfileId = null
     if (permissionProfile?.approvalPolicy) thread.approvalPolicy = permissionProfile.approvalPolicy
     if (permissionProfile?.sandboxMode) thread.sandboxMode = permissionProfile.sandboxMode
-    if (typeof params.approvalPolicy === 'string' && !permissionProfile)
+    if (params.approvalPolicy != null && !permissionProfile)
       thread.approvalPolicy = normalizeApprovalPolicy(params.approvalPolicy)
     const sandboxMode = sandboxFromTurnParams(params)
     if (sandboxMode && !permissionProfile) thread.sandboxMode = sandboxMode
     if (typeof params.cwd === 'string' && params.cwd.length > 0) thread.cwd = params.cwd
     this.store.upsertThread(thread)
+    this.saveRuntimeSettings(threadId, params)
 
     const activePermissionProfileId = threadPermissionProfileId(
       thread.permissionProfileId,
@@ -1467,7 +1485,7 @@ export class CodexClaudeAppServer {
           effort: thread.reasoningEffort,
           summary: null,
           collaborationMode: {
-            mode: 'default',
+            mode: this.store.threadSettings(threadId).planMode ? 'plan' : 'default',
             settings: {
               model: thread.model,
               reasoning_effort: thread.reasoningEffort,
@@ -1843,7 +1861,7 @@ export class CodexClaudeAppServer {
       if (permissionProfile?.sandboxMode) thread.sandboxMode = permissionProfile.sandboxMode
     } else {
       if (hasLegacyPermissionParams(params)) thread.permissionProfileId = null
-      if (typeof params.approvalPolicy === 'string')
+      if (params.approvalPolicy != null)
         thread.approvalPolicy = normalizeApprovalPolicy(params.approvalPolicy)
       const requestedSandbox = sandboxFromTurnParams(params)
       if (requestedSandbox) thread.sandboxMode = requestedSandbox
@@ -2101,7 +2119,8 @@ export class CodexClaudeAppServer {
     //   * thread.approvalPolicy / sandbox flags don't suppress it
     // The current planMode flag for this turn was computed above as
     // `params.planMode === true`; reproduce here so the helpers can check it.
-    const planMode = params.planMode === true || asRecord(params.collaborationMode).mode === 'plan'
+    this.saveRuntimeSettings(thread.id, params)
+    let planMode = this.store.threadSettings(thread.id).planMode === true
     let planItemId: string | null = null
     const ensurePlanItem = (): string => {
       if (planItemId) return planItemId
@@ -2183,9 +2202,7 @@ export class CodexClaudeAppServer {
     const permissionProfile = permissionProfilePolicy(permissionProfileIdFromParams(params))
     const approvalPolicy =
       permissionProfile?.approvalPolicy ??
-      (typeof params.approvalPolicy === 'string'
-        ? normalizeApprovalPolicy(params.approvalPolicy)
-        : null) ??
+      (params.approvalPolicy != null ? normalizeApprovalPolicy(params.approvalPolicy) : null) ??
       thread.approvalPolicy
     const sandboxMode =
       permissionProfile?.sandboxMode ?? sandboxFromTurnParams(params) ?? thread.sandboxMode
@@ -2328,8 +2345,7 @@ export class CodexClaudeAppServer {
         effort: resolvedEffort,
         claudeSessionId: isCodexThread ? thread.codexSessionId : thread.claudeSessionId,
         forkSession,
-        mcpServers:
-          this.store.threadSettings(thread.id).config?.mcp_servers ?? readMcpConfig().sdkValue,
+        mcpServers: this.mcpScope(thread.id).servers,
         dynamicTools: this.store.threadSettings(thread.id).dynamicTools ?? [],
         allowedTools: defaultAllowedTools(),
         addDirs: stringListFromEnv('CLAUDE_CODEX_ADD_DIRS', []),
@@ -2338,7 +2354,7 @@ export class CodexClaudeAppServer {
         approvalPolicy,
         sandboxMode,
         systemPromptAddendum,
-        planMode: params.planMode === true || asRecord(params.collaborationMode).mode === 'plan',
+        planMode,
         imageInputs: Array.isArray(params._imageInputs)
           ? (params._imageInputs as ImageInput[])
           : [],
@@ -2825,6 +2841,54 @@ export class CodexClaudeAppServer {
             if (activeSubagents.size === 0 && !workflowInFlight) disarmWatchdog()
             return
           }
+          if (event.type === 'plan_text') {
+            if (planItemId) {
+              const item = this.store.getTurn(turn.id)?.items.find((i) => i.id === planItemId)
+              if (item)
+                this.notify(peer, {
+                  method: 'item/completed',
+                  params: {
+                    threadId: thread.id,
+                    turnId: turn.id,
+                    item,
+                    completedAtMs: nowMillis(),
+                  },
+                })
+              planItemId = null
+            }
+            const itemId = ensurePlanItem()
+            this.store.updateItem(turn.id, itemId, (item) =>
+              item.type === 'plan' ? { ...item, text: event.text } : item,
+            )
+            this.notify(peer, {
+              method: 'item/plan/delta',
+              params: { threadId: thread.id, turnId: turn.id, itemId, delta: event.text },
+            })
+            return
+          }
+          if (event.type === 'plan_mode') {
+            completeMessage()
+            if (planItemId) {
+              const item = this.store.getTurn(turn.id)?.items.find((i) => i.id === planItemId)
+              if (item)
+                this.notify(peer, {
+                  method: 'item/completed',
+                  params: {
+                    threadId: thread.id,
+                    turnId: turn.id,
+                    item,
+                    completedAtMs: nowMillis(),
+                  },
+                })
+              planItemId = null
+            }
+            planMode = event.enabled
+            this.threadSettingsUpdate(peer, {
+              threadId: thread.id,
+              collaborationMode: { mode: planMode ? 'plan' : 'default' },
+            })
+            return
+          }
           if (event.type === 'text_delta') {
             if (event.delta.length === 0) return
             completeReasoningItem()
@@ -3096,6 +3160,12 @@ export class CodexClaudeAppServer {
           }
         },
         onElicitationRequest: async (request, signal) => {
+          if (
+            typeof approvalPolicy === 'object' &&
+            approvalPolicy !== null &&
+            !allowsApproval(approvalPolicy, 'mcp_elicitations')
+          )
+            return { action: 'decline' }
           if (!turnIsActive() || signal.aborted) return { action: 'cancel' }
           completeMessage()
           const requestId = newId()
@@ -3162,7 +3232,9 @@ export class CodexClaudeAppServer {
             const command = String(event.input.command ?? '')
             if (command) {
               const set = this.commandSessionAllow.get(thread.id) ?? new Set<string>()
-              set.add(command)
+              set.add(
+                JSON.stringify([thread.cwd, thread.approvalPolicy, thread.sandboxMode, command]),
+              )
               this.commandSessionAllow.set(thread.id, set)
             }
           }
@@ -3175,12 +3247,12 @@ export class CodexClaudeAppServer {
           // item/tool/requestUserInput reverse RPC. The App pops its
           // structured choice card; we wait for the answers, finalise the
           // item, then return the structured answer back to the runtime
-          // (which forwards it to the model via the canUseTool deny path).
+          // 答案通过 SDK canUseTool 的 updatedInput 正式返回。
           const item: ThreadItem = {
             type: 'dynamicToolCall',
             id: newId(),
             namespace: 'claude',
-            tool: 'AskUserQuestion',
+            tool: event.toolName ?? 'AskUserQuestion',
             arguments: { questions: event.questions },
             status: 'inProgress',
             contentItems: null,
@@ -3592,20 +3664,16 @@ export class CodexClaudeAppServer {
     itemId: string,
     event: Extract<RuntimeEvent, { type: 'permission_request' }>,
   ): Promise<PermissionDecision> {
-    // Defensive: if Codex App selected approvalPolicy=never (or "Full access"
-    // sandbox), auto-accept without bouncing the request to the user. The
-    // sidecar already drops can_use_tool in those modes, but in case some
-    // future SDK path still emits permission_request, this prevents the
-    // adapter from sitting on "Awaiting approval" forever.
+    // runtime 已按当前 Turn 权限判断；抵达此处的请求必须由用户决定。
     const thread = this.store.getThread(threadId)
-    if (
-      thread &&
-      (thread.approvalPolicy === 'never' || thread.sandboxMode === 'danger-full-access')
-    ) {
-      return { decision: 'accept' }
-    }
     const command = String(event.input.command ?? '')
-    if (command && this.commandSessionAllow.get(threadId)?.has(command)) {
+    const grantKey = JSON.stringify([
+      thread?.cwd,
+      thread?.approvalPolicy,
+      thread?.sandboxMode,
+      command,
+    ])
+    if (command && this.commandSessionAllow.get(threadId)?.has(grantKey)) {
       return { decision: 'accept' }
     }
 
@@ -3716,12 +3784,7 @@ export class CodexClaudeAppServer {
           )
           this.subagentStateByTurn.delete(turnId)
         }
-        const completed =
-          this.store.completeTurn(turnId, 'interrupted', { message: 'interrupted' }) ?? turn
-        this.notify(peer, {
-          method: 'turn/completed',
-          params: { threadId, turn: this.toLifecycleTurn(completed) },
-        })
+        this.store.completeTurn(turnId, 'interrupted', { message: 'interrupted' })
       }
     }
     this.runtimeReadyByTurn.get(turnId)?.resolve(false)
@@ -3731,11 +3794,17 @@ export class CodexClaudeAppServer {
     // active, so they cannot create an orphan child after this point.
     // 终态先落库，执行权仍保留到 SDK 真正停止，防止旧 interrupt 命中新回合。
     // 停止失败时保留屏障，明确拒绝新提交；重启运行时后才能恢复。
-    // 必须同步触发 SDK 的 abort，再释放交互；否则 CLI 会消费取消结果继续推理。
+    // CLI 确认中断之后才能释放交互，不能只依赖 SDK 的 stdin EOF。
     const interrupting = (async () => this.runtime.interrupt(threadId))()
     this.interruptingByThread.set(threadId, interrupting)
-    this.pendingInteractions.cancelThread(threadId)
     await interrupting
+    this.pendingInteractions.cancelThread(threadId)
+    const completed = this.store.getTurn(turnId)
+    if (completed)
+      this.notify(peer, {
+        method: 'turn/completed',
+        params: { threadId, turn: this.toLifecycleTurn(completed) },
+      })
     this.interruptingByThread.delete(threadId)
     this.clearActiveTurn(threadId)
     this.setThreadStatus(peer, threadId, { type: 'idle' })
@@ -3787,6 +3856,126 @@ export class CodexClaudeAppServer {
     this.store.saveSteeredMessage(activeTurnId, item, messageId, hash)
     await this.runtime.steer(threadId, prompt)
     return { turnId: activeTurnId }
+  }
+
+  private mcpScope(value?: unknown): McpScope {
+    const threadId = value == null ? null : requiredString(value, 'threadId')
+    const thread = threadId === null ? null : this.store.getThread(threadId)
+    if (threadId !== null && !thread) throw new ProtocolError(-32602, '未知会话')
+    const configured =
+      threadId === null ? undefined : this.store.threadSettings(threadId).config?.mcp_servers
+    const servers = configured ?? this.configOverrides.mcp_servers ?? readMcpConfig()
+    sdkMcpServers(servers)
+    return {
+      threadId,
+      cwd: thread?.cwd ?? process.cwd(),
+      servers: servers as Record<string, unknown>,
+    }
+  }
+
+  private mcpCallbacks(peer: RpcPeer, value?: unknown): McpCallbacks {
+    const threadId = value == null ? null : requiredString(value, 'threadId')
+    return {
+      peerId: peer.id,
+      status: (name, status, error) => {
+        this.notify(peer, {
+          method: 'mcpServer/startupStatus/updated',
+          params: { threadId, name, status, error },
+        })
+      },
+      elicitation: async (request, signal) => {
+        if (!threadId) throw new ProtocolError(-32602, 'MCP 交互需要指定会话')
+        const policy = this.store.getThread(threadId)?.approvalPolicy
+        if (policy && typeof policy === 'object' && !allowsApproval(policy, 'mcp_elicitations'))
+          return { action: 'decline' }
+        const requestId = newId()
+        try {
+          const response = await this.sendServerRequest(
+            peer,
+            'mcpServer/elicitation/request',
+            requestId,
+            elicitationParams(request, threadId, null),
+            signal,
+          )
+          signal.throwIfAborted()
+          return elicitationResponse(request, response)
+        } finally {
+          this.notify(peer, { method: 'serverRequest/resolved', params: { threadId, requestId } })
+        }
+      },
+    }
+  }
+
+  private async mcpProbe(peer: RpcPeer, scope: McpScope): Promise<void> {
+    for (const name of Object.keys(sdkMcpServers(scope.servers)))
+      await this.mcp.withClient(
+        scope,
+        name,
+        this.mcpCallbacks(peer, scope.threadId),
+        async (client, signal) => {
+          await client.ping({ signal })
+        },
+      )
+  }
+
+  private async mcpReload(peer: RpcPeer): Promise<unknown> {
+    if (this.activeTurnByThread.size)
+      throw new ProtocolError(-32009, '回合执行期间不能重载 MCP，请先停止回合')
+    await this.mcp.cancelAll()
+    const scopes = [
+      this.mcpScope(),
+      ...[...this.activePeerByThread.keys()].map((id) => this.mcpScope(id)),
+    ]
+    for (const scope of scopes) await this.mcpProbe(peer, scope)
+    return {}
+  }
+
+  private async mcpCall(
+    peer: RpcPeer,
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    const isTool = method === 'mcpServer/tool/call'
+    const scope = this.mcpScope(
+      isTool ? requiredString(params.threadId, 'threadId') : params.threadId,
+    )
+    const server = requiredString(params.server, 'server')
+    const target = requiredString(isTool ? params.tool : params.uri, isTool ? 'tool' : 'uri')
+    if (isTool) {
+      const thread = this.store.getThread(scope.threadId!)!
+      if (this.activeTurnByThread.has(thread.id))
+        throw new ProtocolError(-32009, '回合执行期间不能从管理接口并发调用工具')
+      // 任意 MCP 工具没有可信的副作用边界，管理接口不能绕过原生权限。
+      if (
+        thread.sandboxMode !== 'danger-full-access' ||
+        this.store.threadSettings(thread.id).planMode
+      )
+        throw new ProtocolError(-32004, '直接 MCP 工具调用需要完整权限会话')
+      if (
+        params.arguments != null &&
+        (typeof params.arguments !== 'object' || Array.isArray(params.arguments))
+      )
+        throw new ProtocolError(-32602, 'MCP arguments 必须是对象')
+      if (params._meta != null && (typeof params._meta !== 'object' || Array.isArray(params._meta)))
+        throw new ProtocolError(-32602, 'MCP _meta 必须是对象')
+    }
+    return this.mcp.withClient(
+      scope,
+      server,
+      this.mcpCallbacks(peer, scope.threadId),
+      async (client, signal) => {
+        if (!isTool) return client.readResource({ uri: target }, { signal })
+        return client.callTool(
+          {
+            name: target,
+            arguments: asRecord(params.arguments),
+            ...(params._meta == null ? {} : { _meta: asRecord(params._meta) }),
+          },
+          undefined,
+          { signal },
+        )
+      },
+    )
   }
 
   private configRead(): unknown {
@@ -4022,6 +4211,9 @@ export class CodexClaudeAppServer {
   }
 
   private configWriteResponse(params: Record<string, unknown>): unknown {
+    // 先校验整个批次，避免无效 MCP 配置污染持久化设置。
+    for (const edit of configEdits(params))
+      if (edit.keyPath === 'mcp_servers' && edit.value != null) sdkMcpServers(edit.value)
     for (const edit of configEdits(params)) {
       const { keyPath, value } = edit
       if (keyPath === 'model' && typeof value === 'string' && value.length > 0) {

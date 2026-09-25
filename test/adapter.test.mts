@@ -12,6 +12,7 @@ import test from 'node:test'
 import WebSocket from 'ws'
 import type { ProviderLoopConfigProjectionResult } from '../src/provider-loop-config.mjs'
 import { SessionStore } from '../src/store.mjs'
+import { LocalMcp } from './fixtures/mcp-http.mjs'
 
 const adapter = resolve('dist/src/adapter.mjs')
 const shim = resolve('scripts/codex-shim')
@@ -455,7 +456,7 @@ test('thread/turns/list honors default summary and explicit itemsView', async ()
   }
 })
 
-test('mcpServerStatus/list and startup notifications use conformant Codex v2 shapes', async () => {
+test('MCP 服务无法启动时通知失败，状态查询不能返回空成功', async () => {
   const home = await mkdtemp(join(tmpdir(), 'claude-codex-test-'))
   const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -486,27 +487,24 @@ test('mcpServerStatus/list and startup notifications use conformant Codex v2 sha
     let sawInit = false
     for (let i = 0; i < 50; i += 1) {
       const message = await reader.next()
-      if (message.method === 'mcpServer/startupStatus/updated') startup = message.params
+      if (
+        message.method === 'mcpServer/startupStatus/updated' &&
+        message.params.name === 'github' &&
+        message.params.status === 'failed'
+      )
+        startup = message.params
       if (message.id === 1 && message.method == null) sawInit = true
       if (startup && sawInit) break
     }
     assert.ok(startup, 'expected mcpServer/startupStatus/updated notification')
     assert.equal(startup.name, 'github')
-    assert.ok(
-      ['starting', 'ready', 'failed', 'cancelled'].includes(startup.status),
-      `invalid startup state ${startup.status}`,
-    )
+    assert.equal(startup.status, 'failed')
+    assert.match(startup.error, /ENOENT/)
 
     proc.stdin.write(json({ id: 2, method: 'mcpServerStatus/list', params: {} }))
     const list = await reader.nextResponse(2)
-    const entry = list.result.data[0]
-    assert.equal(entry.name, 'github')
-    // McpServerStatus = { name, tools: map, resources: [], resourceTemplates: [], authStatus }
-    assert.deepEqual(entry.tools, {})
-    assert.deepEqual(entry.resources, [])
-    assert.deepEqual(entry.resourceTemplates, [])
-    assert.ok(['unsupported', 'notLoggedIn', 'bearerToken', 'oAuth'].includes(entry.authStatus))
-    assert.ok(!('status' in entry), 'McpServerStatus has no startup status field')
+    assert.equal(list.error.code, -32001)
+    assert.ok(!('result' in list))
   } finally {
     proc.kill()
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 80 })
@@ -5309,7 +5307,7 @@ test('interrupt during final git diff cannot overwrite an interrupted turn', asy
   }
 })
 
-test('mcp status list reflects configured Claude SDK MCP servers', async () => {
+test('MCP 子进程退出必须返回明确错误', async () => {
   const home = await mkdtemp(join(tmpdir(), 'claude-codex-test-'))
   const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -5327,16 +5325,8 @@ test('mcp status list reflects configured Claude SDK MCP servers', async () => {
   try {
     proc.stdin.write(json({ id: 1, method: 'mcpServerStatus/list', params: {} }))
     const response = await reader.nextResponse(1)
-    // Codex v2 McpServerStatus shape: { name, tools, resources, resourceTemplates, authStatus }.
-    assert.equal(response.result.data[0].name, 'demo')
-    assert.deepEqual(response.result.data[0].tools, {})
-    assert.deepEqual(response.result.data[0].resources, [])
-    assert.deepEqual(response.result.data[0].resourceTemplates, [])
-    assert.ok(
-      ['unsupported', 'notLoggedIn', 'bearerToken', 'oAuth'].includes(
-        response.result.data[0].authStatus,
-      ),
-    )
+    assert.equal(response.error.code, -32001)
+    assert.ok(!('result' in response))
   } finally {
     proc.kill()
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 80 })
@@ -5362,9 +5352,18 @@ test('direct MCP stdio resource and tool calls work', async () => {
   try {
     proc.stdin.write(
       json({
+        id: 10,
+        method: 'thread/start',
+        params: { cwd: home, sandbox: 'danger-full-access', approvalPolicy: 'never' },
+      }),
+    )
+    const started = await reader.nextResponse(10)
+    const threadId = started.result.thread.id
+    proc.stdin.write(
+      json({
         id: 1,
         method: 'mcpServer/tool/call',
-        params: { threadId: 't', server: 'fixture', tool: 'echo', arguments: { value: 'ok' } },
+        params: { threadId, server: 'fixture', tool: 'echo', arguments: { value: 'ok' } },
       }),
     )
     const tool = await reader.nextResponse(1)
@@ -5375,7 +5374,7 @@ test('direct MCP stdio resource and tool calls work', async () => {
       json({
         id: 2,
         method: 'mcpServer/resource/read',
-        params: { threadId: 't', server: 'fixture', uri: 'fixture://resource' },
+        params: { threadId, server: 'fixture', uri: 'fixture://resource' },
       }),
     )
     const resource = await reader.nextResponse(2)
@@ -5569,71 +5568,58 @@ test('skills/list and hooks/list surface Claude Code skills and settings hooks',
 
 test('direct MCP HTTP tool calls work', async () => {
   const home = await mkdtemp(join(tmpdir(), 'claude-codex-test-'))
-  const httpServer = http.createServer((req, res) => {
-    let body = ''
-    req.setEncoding('utf8')
-    req.on('data', (chunk) => {
-      body += chunk
-    })
-    req.on('end', () => {
-      const message = JSON.parse(body)
-      res.setHeader('content-type', 'application/json')
-      if (message.method === 'initialize') {
-        res.end(
-          JSON.stringify({
-            jsonrpc: '2.0',
-            id: message.id,
-            result: {
-              protocolVersion: '2024-11-05',
-              capabilities: {},
-              serverInfo: { name: 'http-fixture', version: '1' },
-            },
-          }),
-        )
-        return
-      }
-      res.end(
-        JSON.stringify({
-          jsonrpc: '2.0',
-          id: message.id,
-          result: {
-            content: [{ type: 'text', text: `http:${message.params.name}` }],
-            structuredContent: { http: true },
-            isError: false,
-          },
-        }),
-      )
-    })
-  })
-  await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve))
-  const address = httpServer.address()
-  assert.equal(typeof address, 'object')
-  const url = `http://127.0.0.1:${address && typeof address === 'object' ? address.port : 0}`
+  const effect = join(home, 'http-effect.txt')
+  const mcp = new LocalMcp(() => writeFile(effect, 'executed'))
+  const url = await mcp.start()
   const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      CODEX_HOME: home,
-      CLAUDE_CODEX_MOCK: '1',
-      CLAUDE_CODEX_MCP_SERVERS: JSON.stringify({ fixture: { type: 'http', url } }),
-      NODE_NO_WARNINGS: '1',
-    },
+    env: { ...process.env, CODEX_HOME: home, CLAUDE_CODEX_MOCK: '1', NODE_NO_WARNINGS: '1' },
   })
   const reader = new JsonLineReader(proc)
   try {
     proc.stdin.write(
       json({
         id: 1,
-        method: 'mcpServer/tool/call',
-        params: { threadId: 't', server: 'fixture', tool: 'echo', arguments: {} },
+        method: 'thread/start',
+        params: {
+          cwd: home,
+          permissions: ':danger-full-access',
+          config: {
+            mcp_servers: {
+              fixture: {
+                url,
+                http_headers: {
+                  Authorization: 'Bearer test-not-a-secret',
+                  'X-Runtime': 'claude-fixture',
+                },
+              },
+            },
+          },
+        },
       }),
     )
-    const tool = await reader.nextResponse(1)
-    assert.equal(tool.result.content[0].text, 'http:echo')
-    assert.equal(tool.result.structuredContent.http, true)
+    const start = await reader.nextResponse(1)
+    proc.stdin.write(
+      json({
+        id: 2,
+        method: 'mcpServer/tool/call',
+        params: {
+          threadId: start.result.thread.id,
+          server: 'fixture',
+          tool: 'touch_fixture',
+          arguments: {},
+        },
+      }),
+    )
+    const tool = await reader.nextResponse(2)
+    assert.equal(tool.error, undefined, JSON.stringify(tool.error))
+    assert.equal(tool.result.content[0].text, 'MCP_FILE_WRITTEN')
+    assert.equal(await readFile(effect, 'utf8'), 'executed')
+    assert.equal(mcp.calls, 1)
+    assert.deepEqual(mcp.errors, [])
   } finally {
     proc.kill()
-    httpServer.close()
+    await mcp.close()
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 80 })
   }
 })

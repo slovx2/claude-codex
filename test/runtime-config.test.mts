@@ -25,6 +25,7 @@ import {
 import { NativeClaudeRuntime, sdkResumeSessionId } from '../src/native-runtime.mjs'
 import { NativeTurnInput } from '../src/native-turn-input.mjs'
 import { resolveRuntimeConfig } from '../src/runtime-config.mjs'
+import { planDirectory } from '../src/runtime-permissions.mjs'
 import { buildSystemPromptAddendum } from '../src/server-helpers.mjs'
 import type { RuntimeTurnContext } from '../src/types.mjs'
 import { parseWorkflowCommand, workflowRuntimePrompt } from '../src/workflow-command.mjs'
@@ -134,6 +135,7 @@ test('native SDK runtime maps manual /workflows prompts to the human workflow tr
   const buildOptions = Reflect.get(runtime, 'buildOptions')
   const options = buildOptions.call(runtime, {}, context, new AbortController())
   assert.deepEqual(options.settings, {
+    plansDirectory: planDirectory(context),
     enableWorkflows: true,
     workflowKeywordTriggerEnabled: true,
   })
@@ -152,7 +154,7 @@ test('native SDK runtime maps manual /workflows prompts to the human workflow tr
           signal: new AbortController().signal,
         },
       ),
-      { behavior: 'allow' },
+      { behavior: 'allow', updatedInput: { command: 'true' } },
     )
   } finally {
     turns.delete(context.turnId)
@@ -197,7 +199,9 @@ test('workflow command parser keeps list and run semantics distinct', () => {
     nativeTurnContext({ prompt: '/workflows' }),
     new AbortController(),
   )
-  assert.equal(options.settings, undefined)
+  assert.equal(options.settings.enableWorkflows, undefined)
+  assert.equal(options.settings.workflowKeywordTriggerEnabled, undefined)
+  assert.equal(typeof options.settings.plansDirectory, 'string')
 })
 
 test('workflow transcript roots follow CLAUDE_CONFIG_DIR and HOME deterministically', () => {

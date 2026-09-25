@@ -1,4 +1,5 @@
 import type { ElicitationRequest, ElicitationResult } from '@anthropic-ai/claude-agent-sdk'
+import type { ApprovalPolicy } from './approval-policy.mjs'
 import type { RuntimeBackendType } from './runtime-config.mjs'
 
 export type JsonRpcId = string | number | null
@@ -84,11 +85,8 @@ export interface ThreadRecord {
   createdAt: number
   updatedAt: number
   status: ThreadStatus
-  // Codex App-supplied policy. `approvalPolicy` is one of untrusted /
-  // on-failure / on-request / never; `sandboxMode` is read-only /
-  // workspace-write / danger-full-access. These map onto Claude Agent SDK
-  // permission_mode and the can_use_tool callback.
-  approvalPolicy: string | null
+  // 审批策略与文件系统边界分别保存，不把禁止提权等同于完全访问。
+  approvalPolicy: ApprovalPolicy | null
   sandboxMode: string | null
   // Newer Codex clients send a built-in or custom permission profile id
   // (for example `:danger-full-access`) instead of a legacy sandbox string.
@@ -318,18 +316,12 @@ export interface RuntimeTurnContext {
   addDirs: string[]
   enableFileCheckpointing: boolean
   outputFormat: unknown | null
-  // Honour the Codex App's selected policy (unless-trusted / on-failure /
-  // on-request / never) and sandbox tier (read-only / workspace-write /
-  // danger-full-access). When the App says "Full access" the runtime should
-  // skip per-tool approvals instead of asking for every Claude tool call.
-  approvalPolicy: string | null
+  approvalPolicy: ApprovalPolicy | null
   sandboxMode: string | null
   // Pre-assembled system prompt addendum (baseInstructions + developerInstructions
   // + personality cue). Sidecar appends it to Claude's default system prompt.
   systemPromptAddendum: string | null
-  // Drive Claude SDK permission_mode='plan' for this turn — Claude generates
-  // a plan but does not execute tools. Set when the App requests `planMode`
-  // on turn/start (or when CLAUDE_CODEX_PERMISSION_MODE=plan globally).
+  // 客户端和原生计划工具共同维护，退出后仍保留用户的沙箱限制。
   planMode: boolean
   // Multimodal input attached to the turn. localImage gets read + base64
   // encoded; image (URL) is passed through as-is. Sidecar reshapes the
@@ -347,6 +339,8 @@ export interface ImageInput {
 }
 
 export type RuntimeEvent =
+  | { type: 'plan_mode'; enabled: boolean }
+  | { type: 'plan_text'; text: string }
   | { type: 'context_compacted'; messageId: string }
   | { type: 'native_boundary'; messageId: string }
   | { type: 'session'; claudeSessionId: string }
@@ -366,6 +360,7 @@ export type RuntimeEvent =
     }
   | {
       type: 'user_input_request'
+      toolName?: string
       requestId: string
       toolUseId: string
       questions: UserInputQuestion[]

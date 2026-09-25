@@ -2,7 +2,10 @@ import { type ChildProcess, execFile, spawn } from 'node:child_process'
 import { type FSWatcher, readFileSync, watch, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { callMcpTool, readMcpConfig, readMcpResource } from './mcp.mjs'
+import type { ApprovalPolicy } from './approval-policy.mjs'
+
+export { normalizeApprovalPolicy } from './approval-policy.mjs'
+
 import type { SessionStore } from './store.mjs'
 import type {
   ClaudeRuntime,
@@ -367,17 +370,6 @@ export function isSubagentToolName(name: string | null | undefined): boolean {
   )
 }
 
-export function normalizeApprovalPolicy(value: unknown): string | null {
-  if (typeof value !== 'string') return null
-  const v = value.trim()
-  // Codex AskForApproval enum: untrusted | on-failure | on-request | never.
-  // (We previously had "unless-trusted" which never appeared in the wire enum.)
-  if (v === 'untrusted' || v === 'on-failure' || v === 'on-request' || v === 'never') return v
-  // Some early App builds shipped the longer form; normalize forward.
-  if (v === 'unless-trusted') return 'untrusted'
-  return null
-}
-
 export function normalizeSandboxMode(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const v = value.trim()
@@ -386,7 +378,7 @@ export function normalizeSandboxMode(value: unknown): string | null {
 
 export interface PermissionProfilePolicy {
   id: string
-  approvalPolicy: string | null
+  approvalPolicy: ApprovalPolicy | null
   sandboxMode: string | null
 }
 
@@ -405,7 +397,7 @@ export function permissionProfileIdFromParams(params: Record<string, unknown>): 
 
 export function hasLegacyPermissionParams(params: Record<string, unknown>): boolean {
   return (
-    typeof params.approvalPolicy === 'string' ||
+    params.approvalPolicy != null ||
     typeof params.sandbox === 'string' ||
     (params.sandboxPolicy !== null &&
       typeof params.sandboxPolicy === 'object' &&
@@ -433,13 +425,14 @@ export function permissionProfilePolicy(value: unknown): PermissionProfilePolicy
 
 export function threadPermissionProfileId(
   permissionProfileId: string | null | undefined,
-  approvalPolicy: string | null,
+  approvalPolicy: ApprovalPolicy | null,
   sandboxMode: string | null,
 ): string | null {
   const explicit = normalizePermissionProfileId(permissionProfileId)
   if (explicit) return explicit
   if (sandboxMode === 'read-only') return ':read-only'
-  if (sandboxMode === 'danger-full-access') return ':danger-full-access'
+  if (sandboxMode === 'danger-full-access' && approvalPolicy === 'never')
+    return ':danger-full-access'
   if (sandboxMode === 'workspace-write' && approvalPolicy === 'on-request') return ':workspace'
   return null
 }
@@ -870,13 +863,7 @@ export function normalizeDecision(response: unknown): PermissionDecision['decisi
     decision === 'cancel'
   )
     return decision
-  if (
-    decision &&
-    typeof decision === 'object' &&
-    ('acceptWithExecpolicyAmendment' in decision || 'applyNetworkPolicyAmendment' in decision)
-  ) {
-    return 'acceptForSession'
-  }
+  // 仅接受本请求 availableDecisions 中的决策；未提供策略修订时不能把任意对象升级为授权。
   return 'decline'
 }
 

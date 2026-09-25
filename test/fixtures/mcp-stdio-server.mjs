@@ -6,6 +6,10 @@ rl.on('line', (line) => {
   if (!line.trim()) return
   const request = JSON.parse(line)
   if (request.method === 'notifications/initialized') return
+  if (request.method === 'ping') {
+    respond(request.id, {})
+    return
+  }
   if (request.method === 'initialize') {
     respond(request.id, {
       protocolVersion: '2024-11-05',
@@ -30,6 +34,10 @@ rl.on('line', (line) => {
     respond(request.id, {
       resources: [{ uri: 'fixture://resource', name: 'fixture resource', mimeType: 'text/plain' }],
     })
+    return
+  }
+  if (request.method === 'resources/templates/list') {
+    respond(request.id, { resourceTemplates: [] })
     return
   }
   if (request.method === 'tools/call') {
