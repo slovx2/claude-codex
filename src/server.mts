@@ -1,11 +1,12 @@
 import { type ChildProcess, execFile, spawn } from 'node:child_process'
-import { existsSync, type FSWatcher, readFileSync, watch, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { buildInfo } from './build-info.mjs'
 import { listClaudeHooks, listClaudeSkills } from './claude-capabilities.mjs'
+import { FilesystemRpc } from './filesystem-rpc.mjs'
 import { callMcpTool, listMcpServerStatuses, readMcpConfig, readMcpResource } from './mcp.mjs'
 import { PendingInteractions } from './pending-interactions.mjs'
 import {
@@ -202,7 +203,7 @@ export class CodexClaudeAppServer {
   private commandSessionAllow = new Map<string, Set<string>>()
   private commandProcesses = new Map<string, ChildProcess>()
   private processHandles = new Map<string, ChildProcess>()
-  private fsWatchers = new Map<string, FSWatcher>()
+  private readonly filesystem = new FilesystemRpc()
   private goals = new Map<string, Record<string, unknown>>()
   private elicitationCounts = new Map<string, number>()
   private tokenUsageByThread = new Map<string, TokenUsageBreakdown>()
@@ -254,6 +255,7 @@ export class CodexClaudeAppServer {
 
   closePeer(peer: RpcPeer): void {
     this.pendingInteractions.cancelPeer(peer.id)
+    this.filesystem.closePeer(peer.id)
     debugLog('peer.close', { peerId: peer.id })
     for (const [threadId, activePeer] of this.activePeerByThread.entries()) {
       if (activePeer.id === peer.id) this.activePeerByThread.delete(threadId)
@@ -264,6 +266,7 @@ export class CodexClaudeAppServer {
     if (this.stopped) return
     this.stopped = true
     this.pendingInteractions.close()
+    this.filesystem.close()
     // Child turns are created directly from Task/Workflow events and are not
     // registered in activeTurnByThread. Finalize them before aborting the
     // runtime or closing SQLite, otherwise stdio EOF can leave child turns
@@ -618,23 +621,15 @@ export class CodexClaudeAppServer {
       case 'account/rateLimits/read':
         return this.accountRateLimits()
       case 'fs/readFile':
-        return this.fsReadFile(asRecord(params))
       case 'fs/readDirectory':
-        return this.fsReadDirectory(asRecord(params))
       case 'fs/getMetadata':
-        return this.fsGetMetadata(asRecord(params))
       case 'fs/writeFile':
-        return this.fsWriteFile(asRecord(params))
       case 'fs/createDirectory':
-        return this.fsCreateDirectory(asRecord(params))
       case 'fs/remove':
-        return this.fsRemove(asRecord(params))
       case 'fs/copy':
-        return this.fsCopy(asRecord(params))
       case 'fs/watch':
-        return this.fsWatch(peer, asRecord(params))
       case 'fs/unwatch':
-        return this.fsUnwatch(asRecord(params))
+        return this.filesystem.call(peer, method, asRecord(params))
       case 'command/exec':
         return this.commandExec(peer, asRecord(params))
       case 'command/exec/write':
@@ -3790,92 +3785,6 @@ export class CodexClaudeAppServer {
     // real rate-limit data from the Anthropic SDK (no headers exposed), the
     // notification was empty noise. The initial snapshot still fires once
     // post-handshake in `initialize` so the UI populates on first connect.
-  }
-
-  private async fsReadFile(params: Record<string, unknown>): Promise<unknown> {
-    const { readFile } = await import('node:fs/promises')
-    const path = stringOr(params.path ?? params.filePath, '')
-    return { dataBase64: (await readFile(path)).toString('base64') }
-  }
-
-  private async fsReadDirectory(params: Record<string, unknown>): Promise<unknown> {
-    const { readdir } = await import('node:fs/promises')
-    const path = stringOr(params.path, process.cwd())
-    const entries = await readdir(path, { withFileTypes: true })
-    return {
-      entries: entries.map((entry) => ({
-        fileName: entry.name,
-        isDirectory: entry.isDirectory(),
-        isFile: entry.isFile(),
-      })),
-    }
-  }
-
-  private async fsGetMetadata(params: Record<string, unknown>): Promise<unknown> {
-    const { stat } = await import('node:fs/promises')
-    const path = stringOr(params.path, '')
-    const metadata = await stat(path)
-    return {
-      isDirectory: metadata.isDirectory(),
-      isFile: metadata.isFile(),
-      isSymlink: metadata.isSymbolicLink(),
-      createdAtMs: metadata.birthtimeMs,
-      modifiedAtMs: metadata.mtimeMs,
-    }
-  }
-
-  private async fsWriteFile(params: Record<string, unknown>): Promise<unknown> {
-    const { writeFile } = await import('node:fs/promises')
-    const path = stringOr(params.path, '')
-    const data =
-      typeof params.dataBase64 === 'string'
-        ? Buffer.from(params.dataBase64, 'base64')
-        : Buffer.alloc(0)
-    await writeFile(path, data)
-    return {}
-  }
-
-  private async fsCreateDirectory(params: Record<string, unknown>): Promise<unknown> {
-    const { mkdir } = await import('node:fs/promises')
-    await mkdir(stringOr(params.path, ''), { recursive: params.recursive !== false })
-    return {}
-  }
-
-  private async fsRemove(params: Record<string, unknown>): Promise<unknown> {
-    const { rm } = await import('node:fs/promises')
-    await rm(stringOr(params.path, ''), {
-      recursive: params.recursive !== false,
-      force: params.force !== false,
-    })
-    return {}
-  }
-
-  private async fsCopy(params: Record<string, unknown>): Promise<unknown> {
-    const { cp } = await import('node:fs/promises')
-    await cp(stringOr(params.sourcePath, ''), stringOr(params.destinationPath, ''), {
-      recursive: params.recursive === true,
-    })
-    return {}
-  }
-
-  private async fsWatch(peer: RpcPeer, params: Record<string, unknown>): Promise<unknown> {
-    const { realpath } = await import('node:fs/promises')
-    const watchId = stringOr(params.watchId, newId())
-    const path = await realpath(stringOr(params.path, process.cwd()))
-    this.fsWatchers.get(watchId)?.close()
-    const watcher = watch(path, { persistent: false }, (_eventType, filename) => {
-      const changedPath = filename ? `${path}/${String(filename)}` : path
-      this.notify(peer, { method: 'fs/changed', params: { watchId, changedPaths: [changedPath] } })
-    })
-    this.fsWatchers.set(watchId, watcher)
-    return { path }
-  }
-
-  private fsUnwatch(params: Record<string, unknown>): unknown {
-    const watchId = stringOr(params.watchId, '')
-    this.fsWatchers.get(watchId)?.close()
-    this.fsWatchers.delete(watchId)
-    return {}
   }
 
   private async commandExec(peer: RpcPeer, params: Record<string, unknown>): Promise<unknown> {
