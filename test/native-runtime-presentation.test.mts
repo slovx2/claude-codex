@@ -28,12 +28,13 @@ const context: RuntimeTurnContext = {
 async function collect(
   messages: Record<string, unknown>[],
   overrides: Partial<RuntimeTurnContext> = {},
+  result: Record<string, unknown> = {},
 ): Promise<RuntimeEvent[]> {
   const runtime = new NativeClaudeRuntime()
   Reflect.set(runtime, 'sdk', {
     query: async function* () {
       yield* messages
-      yield { type: 'result', subtype: 'success', result: 'done' }
+      yield { type: 'result', subtype: 'success', result: 'done', ...result }
     },
   })
   const events: RuntimeEvent[] = []
@@ -171,9 +172,32 @@ test('structured output remains a single deduplicated result', async () => {
     await collect(
       [start('answer'), delta('text', '{"ok":'), assistant('answer', [text('{"ok":true}')])],
       { outputFormat: { type: 'json_schema', schema: { type: 'object' } } },
+      { structured_output: { ok: true } },
     ),
     [{ type: 'text_delta', delta: '{"ok":true}' }],
   )
+})
+
+test('原生结构化结果缺失或不符合 schema 时不能用文字合成成功结果', async () => {
+  const outputFormat = {
+    type: 'json_schema',
+    schema: {
+      type: 'object',
+      properties: { title: { type: 'string' } },
+      required: ['title'],
+      additionalProperties: false,
+    },
+  }
+  for (const result of [{}, { structured_output: {} }, { structured_output: { title: 42 } }]) {
+    await assert.rejects(
+      collect(
+        [assistant('answer', [text('{"title":"不能冒充 SDK 结果"}')])],
+        { outputFormat },
+        result,
+      ),
+      /未返回 structured_output|不符合 outputSchema/,
+    )
+  }
 })
 
 test('ordinary subscription limit updates are quiet and real warnings retain context', async () => {

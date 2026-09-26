@@ -135,6 +135,19 @@ test('CONFIG-004：配置版本、嵌套合并、原子失败与真实来源一�
       exclude_slash_tmp: true,
     })
     assert.equal(current.origins.sandbox_mode.version, write.version)
+    const valueWrite = await client.request('config/value/write', {
+      keyPath: 'sandbox_workspace_write.exclude_tmpdir_env_var',
+      value: true,
+      mergeStrategy: 'replace',
+      expectedVersion: write.version,
+    })
+    assert.notEqual(valueWrite.version, write.version)
+    assert.equal(valueWrite.filePath, write.filePath)
+    const persisted = JSON.parse(await readFile(valueWrite.filePath, 'utf8'))
+    assert.equal(persisted.overrides.sandbox_workspace_write.exclude_tmpdir_env_var, true)
+    const updated = await client.request('config/read', { includeLayers: true })
+    assert.equal(updated.config.sandbox_workspace_write.exclude_tmpdir_env_var, true)
+    assert.equal(updated.origins.sandbox_workspace_write.version, valueWrite.version)
     await client.raw(
       'config/value/write',
       {
@@ -223,6 +236,10 @@ test('CONFIG-005：持久化只读和完全访问控制真实 CLI 写文件，�
       })
       await client.close()
       client = await ProtocolClient.start(home, endpoint)
+      const persisted = await client.request('config/read', { includeLayers: true })
+      assert.equal(persisted.config.sandbox_mode, sandbox)
+      assert.equal(persisted.config.approval_policy, 'never')
+      assert.equal(persisted.config.developer_instructions, 'CONFIG_INSTRUCTIONS_MARKER')
       const created = await client.request('thread/start', { cwd: home })
       assert.equal(created.approvalPolicy, 'never')
       assert.equal(created.sandbox.type, sandbox === 'read-only' ? 'readOnly' : 'dangerFullAccess')

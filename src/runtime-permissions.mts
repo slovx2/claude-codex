@@ -20,6 +20,18 @@ const readTools = new Set([
 const fileTools = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
 export type OriginalBashInputs = Map<string, Record<string, unknown>>
 
+function isStructuredOutput(context: RuntimeTurnContext, name: string): boolean {
+  // 仅放行本轮明确启用的 SDK 输出格式工具，不能豁免同名外部工具。
+  if (name !== 'StructuredOutput' || !context.outputFormat) return false
+  const format = context.outputFormat as Record<string, unknown>
+  return (
+    format.type === 'json_schema' &&
+    typeof format.schema === 'object' &&
+    format.schema !== null &&
+    !Array.isArray(format.schema)
+  )
+}
+
 function policyFor(context: RuntimeTurnContext): RuntimeSandboxPolicy {
   return context.sandboxPolicy ?? defaultSandboxPolicy(context.sandboxMode, context.cwd)
 }
@@ -96,6 +108,7 @@ export function deniedTool(
 ): string | null {
   // 原生计划文件保存在会话专属目录，只豁免此文件，不豁免项目源码或符号链接外逃。
   if (isPlanFile(context, name, input)) return null
+  if (isStructuredOutput(context, name)) return null
   const policy = policyFor(context)
   if (
     ['WebFetch', 'WebSearch'].includes(name) &&
@@ -132,6 +145,7 @@ export function runtimePermissionOptions(
         {
           hooks: [
             async (event: Record<string, unknown>, toolUseId: string) => {
+              const structuredOutput = isStructuredOutput(context, String(event.tool_name))
               let reason =
                 event.agent_id &&
                 ['EnterPlanMode', 'ExitPlanMode'].includes(String(event.tool_name))
@@ -159,31 +173,38 @@ export function runtimePermissionOptions(
                       permissionDecisionReason: reason,
                     },
                   }
-                : context.approvalPolicy === 'untrusted' &&
-                    !readTools.has(String(event.tool_name)) &&
-                    !isPlanFile(
-                      context,
-                      String(event.tool_name),
-                      (event.tool_input ?? {}) as Record<string, unknown>,
-                    )
+                : structuredOutput
                   ? {
                       hookSpecificOutput: {
                         hookEventName: 'PreToolUse',
-                        permissionDecision: 'ask',
-                        ...(updatedInput ? { updatedInput } : {}),
+                        permissionDecision: 'allow',
                       },
                     }
-                  : updatedInput
+                  : context.approvalPolicy === 'untrusted' &&
+                      !readTools.has(String(event.tool_name)) &&
+                      !isPlanFile(
+                        context,
+                        String(event.tool_name),
+                        (event.tool_input ?? {}) as Record<string, unknown>,
+                      )
                     ? {
                         hookSpecificOutput: {
                           hookEventName: 'PreToolUse',
-                          updatedInput,
-                          ...(context.planMode || context.sandboxMode === 'read-only'
-                            ? { permissionDecision: 'allow' }
-                            : {}),
+                          permissionDecision: 'ask',
+                          ...(updatedInput ? { updatedInput } : {}),
                         },
                       }
-                    : {}
+                    : updatedInput
+                      ? {
+                          hookSpecificOutput: {
+                            hookEventName: 'PreToolUse',
+                            updatedInput,
+                            ...(context.planMode || context.sandboxMode === 'read-only'
+                              ? { permissionDecision: 'allow' }
+                              : {}),
+                          },
+                        }
+                      : {}
             },
           ],
         },

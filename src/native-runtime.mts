@@ -29,7 +29,7 @@ if (!process.env.ANTHROPIC_BETAS) {
 //   * text/thinking stream-vs-block dedup — JS SDK re-delivers completed
 //     content blocks after their streaming deltas
 //   * ToolUseBlock double-delivery dedup (skip start, take from AssistantMessage)
-//   * StructuredOutput synthetic-tool coercion
+//   * SDK StructuredOutput 结果校验与转发
 //   * derive_permission_mode mapping for (approvalPolicy, sandbox, planMode)
 //   * multimodal user input (text + base64/url image blocks)
 //
@@ -43,6 +43,7 @@ if (!process.env.ANTHROPIC_BETAS) {
 // installed via optionalDependencies.
 
 import type { OnElicitation, Query } from '@anthropic-ai/claude-agent-sdk'
+import { Ajv } from 'ajv'
 import { type ApprovalPolicy, allowsApproval, toolApprovalFlow } from './approval-policy.mjs'
 import { dynamicToolServer } from './dynamic-tools.mjs'
 import { sdkMcpStartupEnvironment } from './mcp-config.mjs'
@@ -1452,9 +1453,25 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
   ): Promise<void> {
     if (pending.resolved) return
     const subtype = String(message.subtype ?? '')
-    const success = subtype === 'success' && !message.is_error && pending.workflowFailure == null
-    const resultText =
+    let success = subtype === 'success' && !message.is_error && pending.workflowFailure == null
+    let resultText =
       pending.workflowFailure ?? (message.result == null ? null : String(message.result))
+    let structuredText: string | undefined
+    if (success && pending.context.outputFormat) {
+      try {
+        if (message.structured_output === undefined) throw new Error('SDK 未返回 structured_output')
+        const format = pending.context.outputFormat as Record<string, unknown>
+        const validate = new Ajv({ strict: false, validateFormats: false }).compile(
+          format.schema as Record<string, unknown>,
+        )
+        if (!validate(message.structured_output))
+          throw new Error('SDK 结构化结果不符合 outputSchema')
+        structuredText = JSON.stringify(message.structured_output)
+      } catch (error) {
+        success = false
+        resultText = error instanceof Error ? error.message : String(error)
+      }
+    }
     const claudeSessionId = message.session_id == null ? null : String(message.session_id)
     const usage = (message.usage as Record<string, unknown>) || {}
     // Push usage + metrics before completed so server can roll them into the
@@ -1469,10 +1486,9 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       numTurns: numberOrNull(message.num_turns),
       costUsd: numberOrNull(message.total_cost_usd),
     })
-    // If we suppressed text for StructuredOutput, emit the coerced JSON now.
-    if (pending.context.outputFormat && pending.structuredBuffer) {
-      await pending.handlers.onEvent({ type: 'text_delta', delta: pending.structuredBuffer.trim() })
-    }
+    // SDK 的格式工具通过 result.structured_output 返回数据，不能丢弃后用输入合成答案。
+    if (success && structuredText)
+      await pending.handlers.onEvent({ type: 'text_delta', delta: structuredText })
     pending.deferredResult = { success, resultText, claudeSessionId, inputReceipt: message }
     if (!success) await this.stopWorkflowTasks(pending)
     await this.finishDeferredResult(pending)

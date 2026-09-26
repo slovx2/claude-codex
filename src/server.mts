@@ -49,14 +49,11 @@ import {
   allSelectableModelOptions,
   asRecord,
   buildSystemPromptAddendum,
-  coerceStructuredValue,
   commandArray,
   commandEnv,
   compactSummary,
-  conciseStructuredString,
   defaultSelectableModelId,
   emptyTokenBreakdown,
-  fallbackStructuredText,
   fileChangeFromTool,
   gitDiff,
   gitUntrackedDiff,
@@ -2940,7 +2937,8 @@ export class CodexClaudeAppServer {
             // item/plan/delta + (later) turn/plan/updated so the App's
             // Plan-mode UI lights up natively. Outside plan mode it's a
             // normal agentMessage delta.
-            if (planMode) {
+            // 结构化摘要属于输出结果，不能混进计划正文或改变计划状态。
+            if (planMode && params.outputSchema == null) {
               const itemId = ensurePlanItem()
               this.store.updateItem(turn.id, itemId, (item) => {
                 if (item.type === 'plan') return { ...item, text: item.text + event.delta }
@@ -3401,16 +3399,7 @@ export class CodexClaudeAppServer {
       })
     }
     if (params.outputSchema != null && !hasTextOutput) {
-      const text = fallbackStructuredText(params.outputSchema, prompt)
-      const itemId = ensureAgentItem()
-      this.store.updateItem(turn.id, itemId, (item) => {
-        if (item.type === 'agentMessage') return { ...item, text }
-        return item
-      })
-      this.notify(peer, {
-        method: 'item/agentMessage/delta',
-        params: { threadId: thread.id, turnId: turn.id, itemId, delta: text },
-      })
+      throw new Error('运行时未返回结构化结果')
     }
     completeMessage('final_answer')
     const planItem = this.store.getTurn(turn.id)?.items.find((item) => item.id === planItemId)
