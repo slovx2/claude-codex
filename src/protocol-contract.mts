@@ -96,12 +96,14 @@ export function validateRuntimePermissions(params: Record<string, unknown>): voi
     throw new ProtocolError(-32602, '未知协作模式')
   if (
     params.permissions != null &&
-    ![':read-only', ':workspace', ':danger-full-access'].includes(String(params.permissions))
+    (typeof params.permissions !== 'string' ||
+      ![':read-only', ':workspace', ':danger-full-access'].includes(params.permissions))
   )
     throw new ProtocolError(-32602, '未知权限配置')
   if (
     params.sandbox != null &&
-    !['read-only', 'workspace-write', 'danger-full-access'].includes(String(params.sandbox))
+    (typeof params.sandbox !== 'string' ||
+      !['read-only', 'workspace-write', 'danger-full-access'].includes(params.sandbox))
   )
     throw new ProtocolError(-32602, '未知 sandbox 模式')
   if (params.sandboxPolicy != null) parseSandboxPolicy(params.sandboxPolicy)

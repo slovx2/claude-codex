@@ -52,10 +52,12 @@ export function validatePayload(
       const name =
         method === 'config/mcpServer/reload'
           ? 'McpServerRefreshResponse'
-          : contract.params?.$ref
-              ?.split('/')
-              .at(-1)
-              ?.replace(/Params$/, 'Response')
+          : method === 'config/value/write' || method === 'config/batchWrite'
+            ? 'ConfigWriteResponse'
+            : contract.params?.$ref
+                ?.split('/')
+                .at(-1)
+                ?.replace(/Params$/, 'Response')
       const file = files.get(name)
       if (!file) throw new Error(`缺少响应 schema: ${method} (${name})`)
       validator = ajv.compile(JSON.parse(readFileSync(file, 'utf8')))

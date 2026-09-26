@@ -8,6 +8,13 @@ import { allowsApproval } from './approval-policy.mjs'
 import { buildInfo } from './build-info.mjs'
 import { catalogPagination } from './catalog-pagination.mjs'
 import { listClaudeHooks, listClaudeSkills } from './claude-capabilities.mjs'
+import {
+  applyConfigEdits,
+  isConfigObject,
+  readConfigFile,
+  validateConfigTarget,
+  writeConfigFile,
+} from './config-store.mjs'
 import { dynamicToolResult } from './dynamic-tool-result.mjs'
 import { FilesystemRpc } from './filesystem-rpc.mjs'
 import { fuzzyPathMatch } from './fuzzy-search.mjs'
@@ -36,7 +43,7 @@ import {
 } from './provider-loop-selection.mjs'
 import { recordRunEvent } from './run-registry.mjs'
 import { normalizeRuntimeType } from './runtime-config.mjs'
-import { defaultSandboxPolicy, policyFromParams } from './sandbox-policy.mjs'
+import { defaultSandboxPolicy, parseSandboxPolicy, policyFromParams } from './sandbox-policy.mjs'
 import {
   addedFileDiff,
   allSelectableModelOptions,
@@ -47,8 +54,6 @@ import {
   commandEnv,
   compactSummary,
   conciseStructuredString,
-  configEdits,
-  configLayerMetadata,
   defaultSelectableModelId,
   emptyTokenBreakdown,
   fallbackStructuredText,
@@ -556,7 +561,7 @@ export class CodexClaudeAppServer {
       case 'review/start':
         return this.reviewStart(peer, asRecord(params))
       case 'config/read':
-        return this.configRead()
+        return this.configRead(asRecord(params))
       case 'configRequirements/read':
         return { requirements: null }
       case 'model/list':
@@ -696,7 +701,7 @@ export class CodexClaudeAppServer {
         return {}
       case 'config/value/write':
       case 'config/batchWrite':
-        return this.configWriteResponse(asRecord(params))
+        return this.configWriteResponse(asRecord(params), method === 'config/batchWrite')
       case 'getConversationSummary':
         return this.getConversationSummary(asRecord(params))
       case 'gitDiffToRemote':
@@ -717,6 +722,7 @@ export class CodexClaudeAppServer {
   }
 
   private threadStart(peer: RpcPeer, params: Record<string, unknown>): unknown {
+    this.loadPersistedConfig()
     const id = newId()
     const now = nowSeconds()
     const requestedCwd = stringOr(params.cwd, process.cwd())
@@ -755,9 +761,13 @@ export class CodexClaudeAppServer {
       approvalPolicy:
         normalizeApprovalPolicy(params.approvalPolicy) ??
         permissionProfile?.approvalPolicy ??
-        'never',
+        normalizeApprovalPolicy(this.configOverrides.approval_policy) ??
+        'on-request',
       sandboxMode:
-        permissionProfile?.sandboxMode ?? sandboxFromTurnParams(params) ?? 'danger-full-access',
+        permissionProfile?.sandboxMode ??
+        sandboxFromTurnParams(params) ??
+        normalizeSandboxMode(this.configOverrides.sandbox_mode) ??
+        'workspace-write',
       permissionProfileId: permissionProfile?.id ?? null,
       ephemeral: isTitleOrHelper,
       threadSource: normalizeThreadSource(params.threadSource),
@@ -766,10 +776,18 @@ export class CodexClaudeAppServer {
         typeof params.agentNickname === 'string' ? params.agentNickname : null,
       ),
       baseInstructions: nullIfEmpty(
-        typeof params.baseInstructions === 'string' ? params.baseInstructions : null,
+        typeof params.baseInstructions === 'string'
+          ? params.baseInstructions
+          : typeof this.configOverrides.instructions === 'string'
+            ? this.configOverrides.instructions
+            : null,
       ),
       developerInstructions: nullIfEmpty(
-        typeof params.developerInstructions === 'string' ? params.developerInstructions : null,
+        typeof params.developerInstructions === 'string'
+          ? params.developerInstructions
+          : typeof this.configOverrides.developer_instructions === 'string'
+            ? this.configOverrides.developer_instructions
+            : null,
       ),
       personality: normalizePersonality(params.personality),
       // Pick the runtime backend from the chosen model — picking gpt-* in
@@ -779,6 +797,10 @@ export class CodexClaudeAppServer {
       codexSessionId: null,
     }
     this.store.upsertThread(thread)
+    // 保存创建时实际策略，后续全局默认变化不能扩大已有会话的授权。
+    const settings = this.store.threadSettings(id)
+    settings.sandboxPolicy = this.configSandboxPolicy(thread.sandboxMode, cwd)
+    this.store.saveThreadSettings(id, settings)
     this.saveRuntimeSettings(id, params)
     recordRunEvent('thread.started', {
       threadId: thread.id,
@@ -3988,7 +4010,13 @@ export class CodexClaudeAppServer {
     )
   }
 
-  private configRead(): unknown {
+  private configRead(params: Record<string, unknown>): unknown {
+    if (params.includeLayers != null && typeof params.includeLayers !== 'boolean')
+      throw new ProtocolError(-32602, 'includeLayers 必须是布尔值')
+    if (params.cwd != null && typeof params.cwd !== 'string')
+      throw new ProtocolError(-32602, 'cwd 必须是字符串')
+    const persisted = this.loadPersistedConfig()
+    const metadata = { name: { type: 'user', file: this.configPath }, version: persisted.version }
     // Base config = our typed defaults; overrides (whatever the App's
     // settings sheet has written previously via config/value/write) are
     // layered on top so the user sees their last-saved values instead of
@@ -4028,11 +4056,10 @@ export class CodexClaudeAppServer {
           this.providerLoopSelectionInput(),
         ),
       },
-      origins: {
-        model_provider: configLayerMetadata(),
-        'model_providers.claude-code': configLayerMetadata(),
-      },
-      layers: null,
+      origins: Object.fromEntries(Object.keys(persisted.values).map((key) => [key, metadata])),
+      layers: params.includeLayers
+        ? [{ ...metadata, config: persisted.values, disabledReason: null }]
+        : null,
     }
   }
 
@@ -4231,37 +4258,108 @@ export class CodexClaudeAppServer {
     }
   }
 
-  private configWriteResponse(params: Record<string, unknown>): unknown {
-    // 先校验整个批次，避免无效 MCP 配置污染持久化设置。
-    for (const edit of configEdits(params))
-      if (edit.keyPath === 'mcp_servers' && edit.value != null) sdkMcpServers(edit.value)
-    for (const edit of configEdits(params)) {
-      const { keyPath, value } = edit
-      if (keyPath === 'model' && typeof value === 'string' && value.length > 0) {
-        this.configModel = normalizeSelectableModelId(value, this.configModel)
-      } else if (keyPath === 'model_reasoning_effort' && typeof value === 'string') {
-        this.configReasoningEffort =
-          normalizeCodexReasoningEffort(value) ?? this.configReasoningEffort
-      } else {
-        // Unknown key — store in the generic overrides bag so it survives a
-        // restart even though we don't apply it to typed runtime state. This
-        // captures approvalPolicy, sandboxMode, instruction toggles, anything
-        // the App's settings sheet may emit. `null` value clears the entry.
-        if (value === null || value === undefined) {
-          delete this.configOverrides[keyPath]
-        } else {
-          this.configOverrides[keyPath] = value
+  private configWriteResponse(params: Record<string, unknown>, batch: boolean): unknown {
+    validateConfigTarget(params, this.configPath)
+    const previous = readConfigFile(this.configPath)
+    if (params.expectedVersion != null && params.expectedVersion !== previous.version)
+      throw new ProtocolError(-32009, '配置已变化，请重新读取后提交')
+    const next = applyConfigEdits(previous.values, params, batch)
+    this.validateConfigValues(next)
+    // 运行中的工具不能在热重载过程中被悄悄扩大权限。
+    if (params.reloadUserConfig === true && this.activeTurnByThread.size > 0)
+      throw new ProtocolError(-32009, '有活动回合，不能热重载配置')
+    const version = writeConfigFile(this.configPath, next, previous.version)
+    this.loadPersistedConfig()
+    if (params.reloadUserConfig === true) {
+      const changed = (key: string) =>
+        submissionHash(previous.values[key] ?? null) !== submissionHash(next[key] ?? null)
+      for (const id of this.activePeerByThread.keys()) {
+        const thread = this.store.getThread(id)
+        if (!thread) continue
+        if (changed('approval_policy')) {
+          thread.approvalPolicy = normalizeApprovalPolicy(next.approval_policy) ?? 'on-request'
+          thread.permissionProfileId = null
         }
+        if (changed('sandbox_mode')) {
+          thread.sandboxMode = normalizeSandboxMode(next.sandbox_mode) ?? 'workspace-write'
+          thread.permissionProfileId = null
+        }
+        if (changed('instructions'))
+          thread.baseInstructions = typeof next.instructions === 'string' ? next.instructions : null
+        if (changed('developer_instructions'))
+          thread.developerInstructions =
+            typeof next.developer_instructions === 'string' ? next.developer_instructions : null
+        this.store.upsertThread(thread)
+        const settings = this.store.threadSettings(id)
+        if (changed('sandbox_mode') || changed('sandbox_workspace_write'))
+          settings.sandboxPolicy = this.configSandboxPolicy(thread.sandboxMode, thread.cwd)
+        this.store.saveThreadSettings(id, settings)
+        const peer = this.activePeerByThread.get(id)
+        if (peer) this.threadSettingsUpdate(peer, { threadId: id })
       }
     }
-    this.persistConfig()
-    const filePath = stringOr(params.filePath, `${codexHome()}/config.toml`)
     return {
       status: 'ok',
-      version: `claude-codex-${nowSeconds()}`,
-      filePath,
+      version,
+      filePath: this.configPath,
       overriddenMetadata: null,
     }
+  }
+
+  private validateConfigValues(values: Record<string, unknown>): void {
+    validateRuntimePermissions({
+      approvalPolicy: values.approval_policy,
+      sandbox: values.sandbox_mode,
+    })
+    if (
+      values.model != null &&
+      (typeof values.model !== 'string' ||
+        !allSelectableModelOptions().some((model) => model.id === values.model))
+    )
+      throw new ProtocolError(-32602, '配置模型不属于当前 Claude 运行时目录')
+    if (
+      values.model_reasoning_effort != null &&
+      (typeof values.model_reasoning_effort !== 'string' ||
+        !normalizeCodexReasoningEffort(values.model_reasoning_effort))
+    )
+      throw new ProtocolError(-32602, '推理强度配置无效')
+    for (const key of ['instructions', 'developer_instructions'])
+      if (values[key] != null && typeof values[key] !== 'string')
+        throw new ProtocolError(-32602, key + ' 必须是字符串')
+    if (values.mcp_servers != null) sdkMcpServers(values.mcp_servers)
+    if (values.sandbox_workspace_write != null) {
+      if (!isConfigObject(values.sandbox_workspace_write))
+        throw new ProtocolError(-32602, 'sandbox_workspace_write 必须是对象')
+      const configuration = values.sandbox_workspace_write
+      parseSandboxPolicy({
+        type: 'workspaceWrite',
+        ...(configuration.writable_roots == null
+          ? {}
+          : { writableRoots: configuration.writable_roots }),
+        ...(configuration.network_access == null
+          ? {}
+          : { networkAccess: configuration.network_access }),
+        ...(configuration.exclude_tmpdir_env_var == null
+          ? {}
+          : { excludeTmpdirEnvVar: configuration.exclude_tmpdir_env_var }),
+        ...(configuration.exclude_slash_tmp == null
+          ? {}
+          : { excludeSlashTmp: configuration.exclude_slash_tmp }),
+      })
+    }
+  }
+
+  private configSandboxPolicy(mode: string | null, cwd: string) {
+    const policy = defaultSandboxPolicy(mode, cwd)
+    if (policy.type !== 'workspaceWrite') return policy
+    const configured = asRecord(this.configOverrides.sandbox_workspace_write)
+    return parseSandboxPolicy({
+      ...policy,
+      writableRoots: [cwd, ...((configured.writable_roots as string[] | undefined) ?? [])],
+      networkAccess: configured.network_access ?? false,
+      excludeTmpdirEnvVar: configured.exclude_tmpdir_env_var ?? false,
+      excludeSlashTmp: configured.exclude_slash_tmp ?? false,
+    })
   }
 
   private pluginRead(params: Record<string, unknown>): unknown {
@@ -4870,48 +4968,18 @@ export class CodexClaudeAppServer {
     }
   }
 
-  private loadPersistedConfig(): void {
-    try {
-      const parsed = JSON.parse(readFileSync(this.configPath, 'utf8')) as Record<string, unknown>
-      let shouldRepair = false
-      if (typeof parsed.model === 'string' && parsed.model.length > 0) {
-        const normalized = normalizeSelectableModelId(parsed.model, this.configModel)
-        shouldRepair = normalized !== parsed.model
-        this.configModel = normalized
-      }
-      if (typeof parsed.model_reasoning_effort === 'string') {
-        this.configReasoningEffort =
-          normalizeCodexReasoningEffort(parsed.model_reasoning_effort) ?? this.configReasoningEffort
-      }
-      // Restore the overrides bag — any key persisted previously that isn't
-      // the strongly-typed model / effort lives here so it survives restarts.
-      if (
-        parsed.overrides &&
-        typeof parsed.overrides === 'object' &&
-        !Array.isArray(parsed.overrides)
-      ) {
-        this.configOverrides = parsed.overrides as Record<string, unknown>
-      }
-      if (shouldRepair) this.persistConfig()
-    } catch {}
-  }
-
-  private persistConfig(): void {
-    try {
-      ensureParent(this.configPath)
-      writeFileSync(
-        this.configPath,
-        JSON.stringify(
-          {
-            model: this.configModel,
-            model_reasoning_effort: this.configReasoningEffort,
-            overrides: this.configOverrides,
-          },
-          null,
-          2,
-        ) + '\n',
-        { mode: 0o600 },
-      )
-    } catch {}
+  private loadPersistedConfig() {
+    const snapshot = readConfigFile(this.configPath)
+    this.validateConfigValues(snapshot.values)
+    const { model, model_reasoning_effort, ...overrides } = snapshot.values
+    this.configModel = typeof model === 'string' ? model : defaultSelectableModelId()
+    this.configReasoningEffort =
+      normalizeCodexReasoningEffort(
+        typeof model_reasoning_effort === 'string' ? model_reasoning_effort : null,
+      ) ??
+      normalizeCodexReasoningEffort(process.env.CLAUDE_CODEX_DEFAULT_EFFORT) ??
+      'medium'
+    this.configOverrides = overrides
+    return snapshot
   }
 }

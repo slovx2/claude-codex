@@ -660,11 +660,12 @@ test('model/list exposes Claude model aliases and Codex-safe reasoning efforts',
         },
       }),
     )
-    await reader.nextResponse(5)
+    const rejectedConfig = await reader.nextResponse(5)
+    assert.equal(rejectedConfig.error.code, -32602)
     proc.stdin.write(json({ id: 6, method: 'config/read', params: {} }))
     const repairedConfig = await reader.nextResponse(6)
     assert.equal(repairedConfig.result.config.model, 'haiku')
-    assert.equal(repairedConfig.result.config.model_reasoning_effort, 'medium')
+    assert.equal(repairedConfig.result.config.model_reasoning_effort, 'low')
   } finally {
     proc.kill()
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 80 })
@@ -751,7 +752,7 @@ test('config/read resolves saved provider loop selection without projecting raw 
       json({
         id: 1,
         method: 'config/value/write',
-        params: { keyPath: 'provider_loop_provider', value: 'codex' },
+        params: { keyPath: 'provider_loop_provider', value: 'codex', mergeStrategy: 'replace' },
       }),
     )
     await reader.nextResponse(1)
@@ -855,53 +856,27 @@ test('config writes persist across adapter restarts', async () => {
   }
 })
 
-test('invalid persisted model selections are repaired to a selectable model', async () => {
+test('无效持久化模型明确停止启动，不静默换模型或覆盖配置', async () => {
   const home = await mkdtemp(join(tmpdir(), 'claude-codex-test-'))
+  const directory = join(home, 'claude-codex-adapter')
+  await mkdir(directory, { recursive: true })
+  const content = JSON.stringify({
+    model: 'runtime-agent-sdk-sidecar',
+    model_reasoning_effort: 'high',
+  })
+  await writeFile(join(directory, 'config.json'), content)
   try {
-    const adapterConfigDir = join(home, 'claude-codex-adapter')
-    await mkdir(adapterConfigDir, { recursive: true })
-    await writeFile(
-      join(adapterConfigDir, 'config.json'),
-      JSON.stringify(
-        { model: 'runtime-agent-sdk-sidecar', model_reasoning_effort: 'high' },
-        null,
-        2,
-      ) + '\n',
-    )
-
     const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        CODEX_HOME: home,
-        CLAUDE_CODEX_MOCK: '1',
-        CLAUDE_CODEX_DEFAULT_MODEL: 'opus',
-        NODE_NO_WARNINGS: '1',
-      },
+      env: { ...process.env, CODEX_HOME: home, CLAUDE_CODEX_MOCK: '1', NODE_NO_WARNINGS: '1' },
     })
-    const reader = new JsonLineReader(proc)
-    try {
-      proc.stdin.write(json({ id: 1, method: 'config/read', params: {} }))
-      const config = await reader.nextResponse(1)
-      assert.equal(config.result.config.model, 'opus')
-      assert.equal(config.result.config.model_reasoning_effort, 'high')
-
-      proc.stdin.write(json({ id: 2, method: 'model/list', params: {} }))
-      const models = await reader.nextResponse(2)
-      assert.equal(
-        models.result.data.some((model: any) => model.id.startsWith('runtime-')),
-        false,
-      )
-      assert.deepEqual(
-        models.result.data
-          .filter((model: any) => model.isDefault === true)
-          .map((model: any) => model.id),
-        ['opus'],
-      )
-    } finally {
-      proc.kill()
-      await once(proc, 'exit')
-    }
+    let stderr = ''
+    proc.stderr.on('data', (chunk) => {
+      stderr += String(chunk)
+    })
+    const [code] = await once(proc, 'exit')
+    assert.notEqual(code, 0)
+    assert.match(stderr, /配置模型不属于当前 Claude 运行时目录/)
+    assert.equal(await readFile(join(directory, 'config.json'), 'utf8'), content)
   } finally {
     await rm(home, { recursive: true, force: true })
   }
@@ -2716,7 +2691,7 @@ test('config/value/write persists arbitrary settings keys across restarts', asyn
       json({
         id: 1,
         method: 'config/value/write',
-        params: { keyPath: 'approval_policy', value: 'never' },
+        params: { keyPath: 'approval_policy', value: 'never', mergeStrategy: 'replace' },
       }),
     )
     await reader.nextResponse(1)
@@ -2724,7 +2699,7 @@ test('config/value/write persists arbitrary settings keys across restarts', asyn
       json({
         id: 2,
         method: 'config/value/write',
-        params: { keyPath: 'sandbox_mode', value: 'danger-full-access' },
+        params: { keyPath: 'sandbox_mode', value: 'danger-full-access', mergeStrategy: 'replace' },
       }),
     )
     await reader.nextResponse(2)

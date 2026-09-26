@@ -95,28 +95,6 @@ export function summarizeInjectedItem(raw: unknown): string {
   }
 }
 
-export function configEdits(
-  params: Record<string, unknown>,
-): Array<{ keyPath: string; value: unknown }> {
-  if (Array.isArray(params.edits)) {
-    return params.edits
-      .map((edit) => {
-        const rec = asRecord(edit)
-        return { keyPath: String(rec.keyPath ?? rec.key ?? ''), value: rec.value }
-      })
-      .filter((edit) => edit.keyPath.length > 0)
-  }
-  const keyPath = String(params.keyPath ?? params.key ?? '')
-  return keyPath ? [{ keyPath, value: params.value }] : []
-}
-
-export function configLayerMetadata(): unknown {
-  return {
-    name: { type: 'user', file: `${codexHome()}/config.toml` },
-    version: `claude-codex-${nowSeconds()}`,
-  }
-}
-
 export function allSelectableModelOptions(): Array<{
   id: string
   sdkModel: string | null
