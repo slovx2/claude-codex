@@ -3,6 +3,7 @@ import { type FSWatcher, readFileSync, watch, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { ApprovalPolicy } from './approval-policy.mjs'
+import { ProtocolError, pageRecords, submissionHash } from './protocol-contract.mjs'
 import { defaultSandboxPolicy } from './sandbox-policy.mjs'
 
 export { normalizeApprovalPolicy } from './approval-policy.mjs'
@@ -597,24 +598,20 @@ export function sandboxEnvelope(mode: string | null, cwd: string): unknown {
 }
 
 export function permissionProfileList(params: Record<string, unknown>): unknown {
+  if (params.cwd != null && (typeof params.cwd !== 'string' || !params.cwd.trim()))
+    throw new ProtocolError(-32602, 'cwd 必须是非空字符串')
   const profiles = [
     { id: ':read-only', description: null, allowed: true },
     { id: ':workspace', description: null, allowed: true },
     { id: ':danger-full-access', description: null, allowed: true },
   ]
-  const rawCursor = params.cursor
-  const start = rawCursor == null ? 0 : Number(rawCursor)
-  if (!Number.isInteger(start) || start < 0 || start > profiles.length) {
-    throw new Error('invalid permission profile cursor')
-  }
-  const rawLimit = params.limit
-  const requestedLimit = typeof rawLimit === 'number' && Number.isFinite(rawLimit) ? rawLimit : null
-  const limit = requestedLimit == null ? profiles.length : Math.max(1, Math.floor(requestedLimit))
-  const end = Math.min(profiles.length, start + limit)
-  return {
-    data: profiles.slice(start, end),
-    nextCursor: end < profiles.length ? String(end) : null,
-  }
+  const { data, nextCursor } = pageRecords(
+    profiles,
+    { ...params, limit: params.limit ?? profiles.length, sortDirection: 'asc' },
+    `permissions:${submissionHash({ profiles, cwd: params.cwd ?? null })}`,
+    (profile) => profile.id,
+  )
+  return { data, nextCursor }
 }
 
 export function emptyTokenBreakdown(): TokenUsageBreakdown {

@@ -560,7 +560,7 @@ export class CodexClaudeAppServer {
       case 'configRequirements/read':
         return { requirements: null }
       case 'model/list':
-        return this.modelList()
+        return this.modelList(asRecord(params))
       case 'modelProvider/capabilities/read':
         return {
           namespaceTools: true,
@@ -4090,7 +4090,9 @@ export class CodexClaudeAppServer {
     return providers
   }
 
-  private modelList(): unknown {
+  private modelList(params: Record<string, unknown>): unknown {
+    if (params.includeHidden != null && typeof params.includeHidden !== 'boolean')
+      throw new ProtocolError(-32602, 'includeHidden 必须是布尔值')
     const defaultModel = this.configModel
     const options = allSelectableModelOptions()
     const hasConfiguredDefault = options.some((option) => option.id === defaultModel)
@@ -4100,28 +4102,34 @@ export class CodexClaudeAppServer {
       { reasoningEffort: 'high', description: 'Deeper runtime response' },
       { reasoningEffort: 'xhigh', description: 'Maximum reasoning' },
     ]
-    return {
-      data: options.map((option) => ({
-        id: option.id,
-        model: option.id,
-        upgrade: null,
-        upgradeInfo: null,
-        availabilityNux: null,
-        displayName: option.displayName,
-        description: option.description,
-        modelSpecialty: null,
-        hidden: false,
-        supportedReasoningEfforts: reasoningEfforts,
-        defaultReasoningEffort: this.configReasoningEffort,
-        inputModalities: ['text', 'image'],
-        supportsPersonality: false,
-        additionalSpeedTiers: [],
-        serviceTiers: [],
-        defaultServiceTier: null,
-        isDefault: hasConfiguredDefault ? option.id === defaultModel : option.isDefault === true,
-      })),
-      nextCursor: null,
-    }
+    const models = options.map((option) => ({
+      id: option.id,
+      model: option.id,
+      upgrade: null,
+      upgradeInfo: null,
+      availabilityNux: null,
+      displayName: option.displayName,
+      description: option.description,
+      modelSpecialty: null,
+      hidden: false,
+      supportedReasoningEfforts: reasoningEfforts,
+      defaultReasoningEffort: this.configReasoningEffort,
+      inputModalities: ['text', 'image'],
+      supportsPersonality: false,
+      additionalSpeedTiers: [],
+      serviceTiers: [],
+      defaultServiceTier: null,
+      isDefault: hasConfiguredDefault ? option.id === defaultModel : option.isDefault === true,
+    }))
+    // 目录或查询条件改变后，旧游标不能静默读取不一致的下一页。
+    const scope = `models:${submissionHash({ models, includeHidden: params.includeHidden ?? false })}`
+    const { data, nextCursor } = pageRecords(
+      models,
+      { ...params, sortDirection: 'asc' },
+      scope,
+      (model) => model.id,
+    )
+    return { data, nextCursor }
   }
 
   private accountRateLimits(): unknown {
