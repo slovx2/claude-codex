@@ -3436,34 +3436,62 @@ export class CodexClaudeAppServer {
             type: 'active',
             activeFlags: ['waitingOnUserInput'],
           })
-          const answers = await this.requestUserInput(
-            peer,
-            thread.id,
-            turn.id,
-            item.id,
-            event.questions,
-          )
-          if (!turnIsActive()) return { answers: {} }
-          const contentItems = userInputAnswersAsContent(event.questions, answers)
-          const completedItem: ThreadItem = {
-            ...item,
-            status: 'completed',
-            success: true,
-            contentItems,
-            durationMs: Math.max(0, nowMillis() - startedAt),
+          try {
+            const answers = await this.requestUserInput(
+              peer,
+              thread.id,
+              turn.id,
+              item.id,
+              event.questions,
+            )
+            if (!turnIsActive()) return { answers: {} }
+            const contentItems = userInputAnswersAsContent(event.questions, answers)
+            const completedItem: ThreadItem = {
+              ...item,
+              status: 'completed',
+              success: true,
+              contentItems,
+              durationMs: Math.max(0, nowMillis() - startedAt),
+            }
+            this.store.updateItem(turn.id, item.id, () => completedItem)
+            this.notify(peer, {
+              method: 'item/completed',
+              params: {
+                threadId: thread.id,
+                turnId: turn.id,
+                item: completedItem,
+                completedAtMs: nowMillis(),
+              },
+            })
+            return answers
+          } catch (error) {
+            // 超时可能被原生工具转换成拒绝后继续模型，必须在这里结束提问条目。
+            // 中断路径已结束的条目不重复发布，迟到答案也不能恢复该条目。
+            if (turnIsActive() && this.activeItemsByTurn.get(turn.id)?.has(item.id)) {
+              const message = error instanceof Error ? error.message : String(error)
+              const failedItem: ThreadItem = {
+                ...item,
+                status: 'failed',
+                success: false,
+                contentItems: [{ type: 'inputText', text: message }],
+                durationMs: Math.max(0, nowMillis() - startedAt),
+              }
+              this.store.updateItem(turn.id, item.id, () => failedItem)
+              this.notify(peer, {
+                method: 'item/completed',
+                params: {
+                  threadId: thread.id,
+                  turnId: turn.id,
+                  item: failedItem,
+                  completedAtMs: nowMillis(),
+                },
+              })
+            }
+            throw error
+          } finally {
+            if (turnIsActive())
+              this.setThreadStatus(peer, thread.id, { type: 'active', activeFlags: [] })
           }
-          this.store.updateItem(turn.id, item.id, () => completedItem)
-          this.notify(peer, {
-            method: 'item/completed',
-            params: {
-              threadId: thread.id,
-              turnId: turn.id,
-              item: completedItem,
-              completedAtMs: nowMillis(),
-            },
-          })
-          this.setThreadStatus(peer, thread.id, { type: 'active', activeFlags: [] })
-          return answers
         },
       },
     )

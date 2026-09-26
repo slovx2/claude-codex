@@ -28,7 +28,17 @@ export function elicitationResponse(
   request: ElicitationRequest,
   value: unknown,
 ): ElicitationResult {
-  const parsed = ElicitResultSchema.safeParse(value)
+  // Codex 原生响应允许 null 表示可选字段缺省，SDK 的 metadata 只接受对象或缺省。
+  // 仅删除这两个顶层空值；非法类型和表单内容仍交给原来的结构校验拒绝。
+  const normalized =
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(
+          Object.entries(value).filter(
+            ([key, entry]) => entry !== null || (key !== 'content' && key !== '_meta'),
+          ),
+        )
+      : value
+  const parsed = ElicitResultSchema.safeParse(normalized)
   if (!parsed.success) throw new ProtocolError(-32602, '交互回答不符合 MCP 响应结构')
   const result = parsed.data
   if (result.action !== 'accept') return result
