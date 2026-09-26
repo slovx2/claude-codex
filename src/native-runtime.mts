@@ -46,6 +46,7 @@ import type { OnElicitation, Query } from '@anthropic-ai/claude-agent-sdk'
 import { Ajv } from 'ajv'
 import { type ApprovalPolicy, allowsApproval, toolApprovalFlow } from './approval-policy.mjs'
 import { dynamicToolServer } from './dynamic-tools.mjs'
+import { goalToolServer, isGoalTool } from './goal-tools.mjs'
 import { sdkMcpStartupEnvironment } from './mcp-config.mjs'
 import { NativeMcpBridge } from './native-mcp-bridge.mjs'
 import { NativeProcess, succeedsWithin } from './native-process.mjs'
@@ -91,6 +92,8 @@ interface PendingTurn {
   // dedup scoped to a model response, preserving unstreamed blocks alongside
   // streamed ones and emitting a boundary only when the message id changes.
   assistantMessageId: string | null
+  usageMessageIds: Map<string, string>
+  usageByMessage: Map<string, Record<string, unknown>>
   streamedBlocks: Map<number, { type: string; text: string }>
   // Subagent suppression — when a Task/Agent tool_use opens a subagent, all
   // nested tool_use / text / thinking events should be hidden from the App
@@ -176,6 +179,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         context.cwd,
         handlers,
         abort.signal,
+        context.mcpConfigSource,
       )
       if (input.isClosed) throw new ProtocolError(-32009, '原生回合启动已取消')
       return await new Promise<void>((resolve, reject) => {
@@ -183,7 +187,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         // SDKUserMessage envelopes. Always feed the iterable form so we have
         // room to attach image blocks alongside the text and the door is open
         // for mid-turn steer() calls.
-        if (context.dynamicTools?.length) {
+        if (context.dynamicTools?.length || context.goalTools) {
           const nativeIds = new Map<string, string[]>()
           const hooks = options.hooks as { PreToolUse: Array<{ hooks: unknown[] }> }
           hooks.PreToolUse.push({
@@ -197,14 +201,32 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
               },
             ],
           })
-          options.mcpServers = {
-            ...((options.mcpServers as Record<string, unknown>) ?? {}),
-            tyrs_hand: dynamicToolServer(context.dynamicTools, handlers, (name, args) => {
+          const servers = (options.mcpServers as Record<string, unknown>) ?? {}
+          if (context.dynamicTools?.length)
+            servers.tyrs_hand = dynamicToolServer(context.dynamicTools, handlers, (name, args) => {
               const id = nativeIds.get(`mcp__tyrs_hand__${name}:${submissionHash(args)}`)?.shift()
               if (!id) throw new Error('缺少原生工具调用 ID，禁止执行副作用')
               return id
-            }),
+            })
+          if (context.goalTools) {
+            if (servers.tyrs_goal) throw new Error('tyrs_goal 是内部目标服务保留名称')
+            servers.tyrs_goal = goalToolServer(
+              {
+                ...handlers,
+                onGoalToolCall: async (name, args, callId) => {
+                  const result = await handlers.onGoalToolCall?.(name, args, callId)
+                  if (name === 'create_goal') context.trackGoalTools = true
+                  return result
+                },
+              },
+              (name, args) => {
+                const id = nativeIds.get(`mcp__tyrs_goal__${name}:${submissionHash(args)}`)?.shift()
+                if (!id) throw new Error('缺少原生目标工具调用 ID，禁止执行')
+                return id
+              },
+            )
           }
+          options.mcpServers = servers
         }
 
         const query = sdk.query({ prompt: input, options })
@@ -218,6 +240,8 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
           resolve,
           reject,
           assistantMessageId: null,
+          usageMessageIds: new Map(),
+          usageByMessage: new Map(),
           streamedBlocks: new Map(),
           activeSubagents: new Set(),
           completedWorkflowTasks: new Set(),
@@ -363,6 +387,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     abort: AbortController,
   ): Record<string, unknown> {
     const originalBashInputs: OriginalBashInputs = new Map()
+    const reservedGoalTools = new Set<string>()
     const opts: Record<string, unknown> = {
       abortController: abort,
       includePartialMessages: true,
@@ -422,16 +447,27 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
                 typeof event.agent_id === 'string'
                   ? await sdk.getSubagentMessages(sessionId, event.agent_id, { dir: context.cwd })
                   : await sdk.getSessionMessages(sessionId, { dir: context.cwd })
-              if (
-                messages.some((entry) => {
-                  const content = (entry.message as { content?: unknown })?.content
-                  return (
-                    Array.isArray(content) &&
-                    content.some((block) => block?.type === 'tool_use' && block.id === toolUseId)
+              const entry = messages.find((entry) => {
+                const content = (entry.message as { content?: unknown })?.content
+                return (
+                  Array.isArray(content) &&
+                  content.some((block) => block?.type === 'tool_use' && block.id === toolUseId)
+                )
+              })
+              if (entry) {
+                const pending = this.turns.get(context.turnId)
+                const assistant = entry.message as Record<string, unknown>
+                if (pending && context.goalTools) await this.goalUsage(pending, assistant)
+                if (pending && context.trackGoalTools && !isGoalTool(String(event.tool_name))) {
+                  pending.handlers.onNativeToolIntent?.(
+                    toolUseId,
+                    String(event.tool_name),
+                    (event.tool_input ?? {}) as Record<string, unknown>,
                   )
-                })
-              )
+                  reservedGoalTools.add(toolUseId)
+                }
                 return {}
+              }
               await delay(25, undefined, { signal: abort.signal })
             } while (Date.now() < deadline)
           } catch {
@@ -490,6 +526,15 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         ],
       },
     ]
+    const confirmNativeTool =
+      (failed: boolean) => async (event: Record<string, unknown>, callId: string) => {
+        const pending = this.turns.get(context.turnId)
+        if (pending && reservedGoalTools.delete(callId) && !isGoalTool(String(event.tool_name)))
+          pending.handlers.onNativeToolResult?.(callId, { confirmed: true, failed })
+        return {}
+      }
+    ;(hooks.PostToolUse as unknown[]).push({ hooks: [confirmNativeTool(false)] })
+    hooks.PostToolUseFailure = [{ hooks: [confirmNativeTool(true)] }]
 
     // Project + developer + personality instructions ride along as a system
     // prompt append, preserving Claude Code's built-in preset.
@@ -531,6 +576,10 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       const toolUseId = options.toolUseID || `tool-${newId()}`
       const pending = this.turns.get(context.turnId)
       if (!pending) return { behavior: 'deny', message: 'turn already finished' }
+      if (context.goalTools && isGoalTool(toolName))
+        return options.agentID
+          ? { behavior: 'deny', message: '子代理不能修改父会话目标' }
+          : { behavior: 'allow', updatedInput: input }
 
       // 用 SDK 正式的 updatedInput 返回答案，不能伪装成工具拒绝。
       if (toolName === 'AskUserQuestion') {
@@ -969,8 +1018,21 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
   ): Promise<void> {
     const event = message.event as Record<string, unknown> | undefined
     if (!event) return
-    if (message.parent_tool_use_id || pending.activeSubagents.size > 0) return
     const eventType = String(event.type ?? '')
+    const source = String(message.parent_tool_use_id ?? '')
+    pending.usageMessageIds ??= new Map()
+    pending.usageByMessage ??= new Map()
+    if (eventType === 'message_start') {
+      const inner = event.message as Record<string, unknown> | undefined
+      if (typeof inner?.id === 'string') {
+        pending.usageMessageIds.set(source, inner.id)
+        pending.usageByMessage.set(inner.id, (inner.usage ?? {}) as Record<string, unknown>)
+      }
+    } else if (eventType === 'message_delta') {
+      const id = pending.usageMessageIds.get(source)
+      if (id) await this.goalUsage(pending, { id, usage: event.usage })
+    }
+    if (message.parent_tool_use_id || pending.activeSubagents.size > 0) return
     if (eventType === 'message_start') {
       const inner = event.message as Record<string, unknown> | undefined
       await this.beginAssistantMessage(pending, stringOrNull(inner?.id), true)
@@ -1051,6 +1113,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
   ): Promise<void> {
     const inner = message.message as Record<string, unknown> | undefined
     if (!inner) return
+    await this.goalUsage(pending, inner)
     const nestedMessage = Boolean(message.parent_tool_use_id)
     if (!nestedMessage && pending.activeSubagents.size === 0) {
       await this.beginAssistantMessage(pending, stringOrNull(inner.id))
@@ -1494,6 +1557,23 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     await this.finishDeferredResult(pending)
   }
 
+  private async goalUsage(pending: PendingTurn, message: Record<string, unknown>): Promise<void> {
+    if (
+      !pending.context?.goalTools ||
+      typeof message.id !== 'string' ||
+      !message.usage ||
+      typeof message.usage !== 'object'
+    )
+      return
+    pending.usageByMessage ??= new Map()
+    const usage = { ...(pending.usageByMessage.get(message.id) ?? {}) }
+    for (const [key, value] of Object.entries(message.usage))
+      if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
+        usage[key] = Math.max(Number(usage[key] ?? 0), value)
+    pending.usageByMessage.set(message.id, usage)
+    await pending.handlers.onEvent({ type: 'goal_usage', messageId: message.id, usage })
+  }
+
   private async handleOther(
     pending: PendingTurn,
     type: string,
@@ -1501,6 +1581,12 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
   ): Promise<void> {
     if (type === 'rate_limit' || type === 'rate_limit_event') {
       const info = message.rate_limit_info as Record<string, unknown> | undefined
+      if (
+        pending.context?.goalTools &&
+        info?.status === 'rejected' &&
+        (typeof info.rateLimitType === 'string' || info.errorCode === 'credits_required')
+      )
+        await pending.handlers.onEvent({ type: 'goal_limit', usageLimited: true })
       // Subscription usage updates also arrive when requests are allowed.
       // Those are bookkeeping, not warnings about a failed model request.
       if (info?.status === 'allowed') return

@@ -18,9 +18,11 @@ import {
 import { dynamicToolResult } from './dynamic-tool-result.mjs'
 import { FilesystemRpc } from './filesystem-rpc.mjs'
 import { fuzzyPathMatch } from './fuzzy-search.mjs'
+import { GoalController } from './goal-controller.mjs'
 import { readMcpConfig } from './mcp.mjs'
 import { sdkMcpServers } from './mcp-config.mjs'
 import { elicitationParams, elicitationResponse } from './mcp-elicitation.mjs'
+import { mcpOAuthManager } from './mcp-oauth.mjs'
 import { type McpCallbacks, McpRpc, type McpScope } from './mcp-rpc.mjs'
 import { PendingInteractions } from './pending-interactions.mjs'
 import { ProcessRpc } from './process-rpc.mjs'
@@ -101,7 +103,7 @@ import {
   wrapMcpToolResult,
 } from './server-helpers.mjs'
 import { PINNED_SECTION_ID, type SessionStore } from './store.mjs'
-import { patchThreadGoal } from './thread-goals.mjs'
+import type { ThreadGoal } from './thread-goals.mjs'
 import { patchGitInfo } from './thread-metadata.mjs'
 import type {
   ClaudeRuntime,
@@ -210,6 +212,11 @@ export class CodexClaudeAppServer {
   private activePeerByThread = new Map<string, RpcPeer>()
   private peerFeatures = new WeakMap<RpcPeer, PeerFeatures>()
   private activeTurnByThread = new Map<string, string>()
+  private scheduledGoals = new Map<string, string>()
+  private goalUsageLimited = new Set<string>()
+  private get goals(): GoalController {
+    return new GoalController(this.store)
+  }
   private interruptingByThread = new Map<string, Promise<void>>()
   private activeItemsByTurn = new Map<string, Set<string>>()
   private runtimeReadyByTurn = new Map<
@@ -227,6 +234,7 @@ export class CodexClaudeAppServer {
   private readonly processes = new ProcessRpc()
   private readonly filesystem = new FilesystemRpc()
   private readonly mcp = new McpRpc()
+  private readonly mcpOAuth = mcpOAuthManager()
   private elicitationCounts = new Map<string, number>()
   private configModel = defaultSelectableModelId()
   private configReasoningEffort =
@@ -275,6 +283,7 @@ export class CodexClaudeAppServer {
   }
 
   closePeer(peer: RpcPeer): void {
+    this.mcpOAuth.closePeer(peer.id)
     this.mcp.closePeer(peer.id)
     this.pendingInteractions.cancelPeer(peer.id)
     this.filesystem.closePeer(peer.id)
@@ -288,6 +297,7 @@ export class CodexClaudeAppServer {
   async stop(): Promise<void> {
     if (this.stopped) return
     this.stopped = true
+    this.mcpOAuth.close()
     await this.mcp.close()
     this.filesystem.close()
     await this.processes.close()
@@ -303,7 +313,7 @@ export class CodexClaudeAppServer {
   }
 
   hasActiveTurns(): boolean {
-    return this.activeTurnByThread.size > 0
+    return this.activeTurnByThread.size > 0 || this.scheduledGoals.size > 0
   }
 
   setIdleCheckHandler(handler: () => void): void {
@@ -476,7 +486,7 @@ export class CodexClaudeAppServer {
       case 'thread/name/set':
         return this.threadNameSet(asRecord(params))
       case 'thread/archive':
-        return this.threadArchive(asRecord(params), true)
+        return this.threadArchive(peer, asRecord(params), true)
       case 'thread/unsubscribe':
         return this.threadUnsubscribe(peer, asRecord(params))
       case 'thread/increment_elicitation':
@@ -484,7 +494,7 @@ export class CodexClaudeAppServer {
       case 'thread/decrement_elicitation':
         return this.threadAdjustElicitation(asRecord(params), -1)
       case 'thread/goal/set':
-        return this.threadGoalSet(asRecord(params))
+        return this.threadGoalSet(peer, asRecord(params))
       case 'thread/goal/get':
         return this.threadGoalGet(asRecord(params))
       case 'thread/goal/clear':
@@ -510,7 +520,7 @@ export class CodexClaudeAppServer {
       case 'memory/reset':
         return {}
       case 'thread/unarchive':
-        return this.threadArchive(asRecord(params), false)
+        return this.threadArchive(peer, asRecord(params), false)
       case 'thread/compact/start':
         return this.threadCompactStart(peer, asRecord(params))
       case 'thread/shellCommand':
@@ -635,7 +645,7 @@ export class CodexClaudeAppServer {
       case 'app/list':
         return { data: [], nextCursor: null }
       case 'mcpServer/oauth/login':
-        throw new ProtocolError(-32001, 'MCP OAuth 尚未配置授权流程，不能提供虚假登录地址')
+        return this.mcpOAuthLogin(peer, asRecord(params))
       case 'config/mcpServer/reload':
         return this.mcpReload(peer)
       case 'mcpServerStatus/list':
@@ -877,6 +887,8 @@ export class CodexClaudeAppServer {
     // 恢复时主动回显持久化的计划与审批设置，客户端不能按本地默认值猜测。
     this.threadSettingsUpdate(peer, { threadId })
     this.bindPeerToDescendants(peer, threadId)
+    this.goals.resume(threadId)
+    this.scheduleGoal(threadId)
     const usage = this.store.threadUsage(threadId)
     if (usage)
       setImmediate(() =>
@@ -971,7 +983,8 @@ export class CodexClaudeAppServer {
     this.store.upsertThread(thread)
     this.store.saveThreadSettings(id, this.store.threadSettings(parentId))
     const parentGoal = this.store.threadGoal(parentId)
-    if (parentGoal) this.store.saveThreadGoal({ ...parentGoal, threadId: id })
+    if (parentGoal && parentGoal.status !== 'active')
+      this.store.saveThreadGoal({ ...parentGoal, threadId: id })
     const parentUsage = this.store.threadUsage(parentId)
     this.saveRuntimeSettings(id, params)
     for (const turn of this.store.listTurns(parentId)) {
@@ -1235,10 +1248,20 @@ export class CodexClaudeAppServer {
     return {}
   }
 
-  private threadArchive(params: Record<string, unknown>, archived: boolean): unknown {
+  private async threadArchive(
+    caller: RpcPeer,
+    params: Record<string, unknown>,
+    archived: boolean,
+  ): Promise<unknown> {
     const threadId = requiredString(params.threadId, 'threadId')
     if (!this.store.getThread(threadId)) throw new ProtocolError(-32602, '未知会话')
     this.store.setArchived(threadId, archived)
+    if (archived) {
+      this.scheduledGoals.delete(threadId)
+      const turnId = this.activeTurnByThread.get(threadId)
+      const peer = this.activePeerByThread.get(threadId) ?? caller
+      if (turnId) await this.turnInterrupt(peer, { threadId, turnId })
+    }
     this.notifyThread(threadId, {
       method: archived ? 'thread/archived' : 'thread/unarchived',
       params: { threadId },
@@ -1358,13 +1381,12 @@ export class CodexClaudeAppServer {
     return {}
   }
 
-  private threadGoalSet(params: Record<string, unknown>): unknown {
+  private threadGoalSet(peer: RpcPeer, params: Record<string, unknown>): unknown {
     const threadId = this.goalThreadID(params)
-    const goal = patchThreadGoal(threadId, this.store.threadGoal(threadId), params)
-    this.store.saveThreadGoal(goal)
-    setImmediate(() =>
-      this.notifyThread(threadId, { method: 'thread/goal/updated', params: { threadId, goal } }),
-    )
+    const goal = this.goals.patch(threadId, params)
+    this.activePeerByThread.set(threadId, peer)
+    setImmediate(() => this.goalUpdated(threadId, goal))
+    this.scheduleGoal(threadId)
     return { goal }
   }
 
@@ -1374,7 +1396,8 @@ export class CodexClaudeAppServer {
 
   private threadGoalClear(params: Record<string, unknown>): unknown {
     const threadId = this.goalThreadID(params)
-    const cleared = this.store.clearThreadGoal(threadId)
+    const cleared = this.goals.clear(threadId)
+    this.scheduledGoals.delete(threadId)
     if (cleared)
       setImmediate(() =>
         this.notifyThread(threadId, { method: 'thread/goal/cleared', params: { threadId } }),
@@ -1384,8 +1407,69 @@ export class CodexClaudeAppServer {
 
   private goalThreadID(params: Record<string, unknown>): string {
     const threadId = requiredString(params.threadId, 'threadId')
-    if (!this.store.getThread(threadId)) throw new ProtocolError(-32602, '未知会话')
+    const thread = this.store.getThread(threadId)
+    if (!thread) throw new ProtocolError(-32602, '未知会话')
+    if (thread.archived) throw new ProtocolError(-32600, '会话已归档')
     return threadId
+  }
+
+  private goalUpdated(threadId: string, goal: ThreadGoal | null): void {
+    if (goal)
+      this.notifyThread(threadId, { method: 'thread/goal/updated', params: { threadId, goal } })
+  }
+
+  private finishGoal(
+    threadId: string,
+    turnId: string,
+    status: 'completed' | 'interrupted' | 'failed',
+  ): void {
+    const limited = this.goalUsageLimited.delete(turnId)
+    this.goalUpdated(threadId, this.goals.finish(threadId, turnId, status, limited))
+  }
+
+  private scheduleGoal(threadId: string): void {
+    if (this.stopped || this.scheduledGoals.has(threadId) || !this.goals.runnable(threadId)) return
+    const generation = this.store.goalState(threadId).ledger.generation
+    this.scheduledGoals.set(threadId, generation)
+    setImmediate(() => {
+      if (this.scheduledGoals.get(threadId) !== generation) return
+      this.scheduledGoals.delete(threadId)
+      const peer = this.activePeerByThread.get(threadId)
+      if (
+        !peer ||
+        this.stopped ||
+        this.activeTurnByThread.has(threadId) ||
+        this.interruptingByThread.has(threadId) ||
+        this.nativeMutations.has(threadId) ||
+        !this.goals.runnable(threadId) ||
+        this.store.goalState(threadId).ledger.generation !== generation
+      )
+        return
+      if (this.store.hasUncertainTools(threadId)) {
+        this.goalUpdated(threadId, this.goals.patch(threadId, { status: 'blocked' }))
+        this.notifyThread(threadId, {
+          method: 'warning',
+          params: {
+            threadId,
+            message: '存在结果未确认的工具副作用，目标不能自动恢复。请先核对执行结果。',
+          },
+        })
+        return
+      }
+      // 始终复用真实提交、SDK 会话和审批链路；不注入预制助手历史。
+      void this.turnStart(peer, {
+        threadId,
+        input: [{ type: 'text', text: '继续执行当前持续目标；完成后使用目标工具确认完成。' }],
+        clientUserMessageId: 'goal:' + generation + ':' + newId(),
+      }).catch((error) => {
+        if (this.stopped) return
+        this.goalUpdated(threadId, this.goals.patch(threadId, { status: 'blocked' }))
+        this.notifyThread(threadId, {
+          method: 'warning',
+          params: { threadId, message: String(error) },
+        })
+      })
+    })
   }
 
   private threadAdjustElicitation(params: Record<string, unknown>, delta: number): unknown {
@@ -1950,6 +2034,7 @@ export class CodexClaudeAppServer {
       error: null,
     }
     this.store.saveSubmission(turn, messageId, hash)
+    if (params.outputSchema == null) this.goals.begin(threadId, turnId)
     recordRunEvent('turn.started', {
       threadId,
       turnId,
@@ -1987,6 +2072,7 @@ export class CodexClaudeAppServer {
         if (this.stopped) return
         const current = this.store.getTurn(turnId)
         if (current && current.status !== 'inProgress') return
+        this.finishGoal(threadId, turnId, 'failed')
         const completed =
           this.store.completeTurn(turnId, 'failed', { message: error.message }) ?? turn
         this.pendingInteractions.cancelThread(threadId)
@@ -2037,6 +2123,7 @@ export class CodexClaudeAppServer {
       },
     })
 
+    this.finishGoal(thread.id, turn.id, 'completed')
     const completed = this.store.completeTurn(turn.id, 'completed') ?? turn
     recordRunEvent('turn.completed', {
       threadId: thread.id,
@@ -2051,6 +2138,7 @@ export class CodexClaudeAppServer {
       method: 'turn/completed',
       params: { threadId: thread.id, turn: this.toLifecycleTurn(completed) },
     })
+    this.scheduleGoal(thread.id)
   }
 
   private workflowListText(threadId: string, currentTurnId: string): string {
@@ -2299,6 +2387,9 @@ export class CodexClaudeAppServer {
     }
 
     const rawTurnModel = stringOr(params.model, thread.model)
+    if (turnPurpose === 'normal')
+      systemPromptAddendum =
+        [systemPromptAddendum, this.goals.context(thread.id)].filter(Boolean).join('\n\n') || null
     const isCodexThread = false
     const resolvedModel = isCodexThread
       ? rawTurnModel
@@ -2380,6 +2471,9 @@ export class CodexClaudeAppServer {
         threadId: thread.id,
         turnId: turn.id,
         purpose: turnPurpose,
+        goalTools: turnPurpose === 'normal',
+        trackGoalTools:
+          turnPurpose === 'normal' && this.store.threadGoal(thread.id)?.status === 'active',
         prompt: effectivePrompt,
         cwd: stringOr(params.cwd, thread.cwd),
         runtimeType: isCodexThread ? 'codex-proxy' : null,
@@ -2388,6 +2482,7 @@ export class CodexClaudeAppServer {
         claudeSessionId: isCodexThread ? thread.codexSessionId : thread.claudeSessionId,
         forkSession,
         mcpServers: this.mcpScope(thread.id).servers,
+        mcpConfigSource: this.mcpScope(thread.id).source,
         dynamicTools: this.store.threadSettings(thread.id).dynamicTools ?? [],
         allowedTools: defaultAllowedTools(),
         addDirs: stringListFromEnv('CLAUDE_CODEX_ADD_DIRS', []),
@@ -2405,6 +2500,24 @@ export class CodexClaudeAppServer {
           : [],
       },
       {
+        onGoalToolCall: async (name, args, callId) => {
+          if (!turnIsActive()) throw new Error('Turn 已结束，不能执行目标工具')
+          const result = this.goals.tool(thread.id, turn.id, name, args, callId)
+          this.goalUpdated(thread.id, this.store.threadGoal(thread.id))
+          return result
+        },
+        onNativeToolIntent: (callId, name, args) => {
+          if (!turnIsActive()) throw new Error('Turn 已结束，不能执行原生工具')
+          const prior = this.store.reserveTool(
+            thread.id,
+            'native:' + callId,
+            submissionHash({ name, args }),
+          )
+          if (prior) throw new Error('原生工具已经执行并确认，禁止再次产生副作用')
+        },
+        onNativeToolResult: (callId, result) => {
+          if (turnIsActive()) this.store.completeTool(thread.id, 'native:' + callId, result)
+        },
         onDynamicToolCall: async (tool, args, callId) => {
           if (!turnIsActive()) throw new Error('Turn 已结束，不能执行工具')
           const previous = this.store.reserveTool(thread.id, callId, submissionHash({ tool, args }))
@@ -3139,6 +3252,22 @@ export class CodexClaudeAppServer {
             this.recordTokenUsage(peer, thread.id, turn.id, event.usage)
             return
           }
+          if (event.type === 'goal_usage') {
+            this.goalUpdated(
+              thread.id,
+              this.goals.usage(
+                thread.id,
+                turn.id,
+                event.messageId,
+                tokenBreakdownFromClaudeUsage(event.usage).totalTokens,
+              ),
+            )
+            return
+          }
+          if (event.type === 'goal_limit') {
+            if (event.usageLimited) this.goalUsageLimited.add(turn.id)
+            return
+          }
           if (event.type === 'hook') {
             // Render hook activity once as a structured Codex hookPrompt item.
             // All fragments of the same hook run share one hookRunId so App
@@ -3413,6 +3542,7 @@ export class CodexClaudeAppServer {
           completedAtMs: nowMillis(),
         },
       })
+    this.finishGoal(thread.id, turn.id, 'completed')
     const completed: TurnRecord = this.store.completeTurn(turn.id, 'completed') ?? turn
     recordRunEvent('turn.completed', {
       threadId: thread.id,
@@ -3428,6 +3558,7 @@ export class CodexClaudeAppServer {
       completed.numTurns = collectedMetrics.numTurns
       completed.costUsd = collectedMetrics.costUsd
     }
+    this.scheduleGoal(thread.id)
     this.clearActiveTurn(thread.id)
     this.setThreadStatus(peer, thread.id, { type: 'idle' })
     // Plan-mode text streams through the `plan` ThreadItem + item/plan/delta
@@ -3809,6 +3940,7 @@ export class CodexClaudeAppServer {
           )
           this.subagentStateByTurn.delete(turnId)
         }
+        this.finishGoal(threadId, turnId, 'interrupted')
         this.store.completeTurn(turnId, 'interrupted', { message: 'interrupted' })
       }
     }
@@ -3895,7 +4027,23 @@ export class CodexClaudeAppServer {
       threadId,
       cwd: thread?.cwd ?? process.cwd(),
       servers: servers as Record<string, unknown>,
+      source:
+        configured != null
+          ? `thread:${threadId}`
+          : this.configOverrides.mcp_servers != null
+            ? `config:${this.configPath}`
+            : `native:${process.env.CLAUDE_CONFIG_DIR ?? homedir()}`,
     }
+  }
+
+  private async mcpOAuthLogin(peer: RpcPeer, params: Record<string, unknown>): Promise<unknown> {
+    const scope = this.mcpScope(params.threadId)
+    const name = requiredString(params.name, 'name')
+    const config = sdkMcpServers(scope.servers)[name]
+    if (!config) throw new ProtocolError(-32602, '当前范围未配置指定 MCP 服务')
+    return this.mcpOAuth.login(scope.source, config, params, peer.id, (result) => {
+      this.notify(peer, { method: 'mcpServer/oauthLogin/completed', params: result })
+    })
   }
 
   private mcpCallbacks(peer: RpcPeer, value?: unknown): McpCallbacks {
@@ -4867,6 +5015,7 @@ export class CodexClaudeAppServer {
     for (const [threadId, turnId] of this.activeTurnByThread.entries()) {
       const turn = this.store.getTurn(turnId)
       if (turn?.status === 'inProgress') {
+        this.finishGoal(threadId, turnId, status)
         this.store.completeTurn(turnId, status, error)
       }
       this.store.updateThreadStatus(threadId, { type: 'idle' })

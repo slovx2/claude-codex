@@ -16,6 +16,8 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
 import { sdkMcpServers, sdkMcpStartupEnvironment } from './mcp-config.mjs'
+import { mcpOAuthManager } from './mcp-oauth.mjs'
+import { OAuthLoginRequired } from './mcp-oauth-provider.mjs'
 import type { RuntimeHandlers } from './types.mjs'
 
 // 连接仍进入真实 SDK 的 MCP 工具执行链；交互直接回到 Hub，避免 CLI 丢弃 URL 和元数据。
@@ -29,6 +31,7 @@ export class NativeMcpBridge {
     cwd: string,
     handlers: Pick<RuntimeHandlers, 'onElicitationRequest'>,
     signal: AbortSignal,
+    source = 'native-default',
   ): Promise<Record<string, McpSdkServerConfigWithInstance>> {
     const result: Record<string, McpSdkServerConfigWithInstance> = {}
     const timeout = Number(sdkMcpStartupEnvironment(raw).MCP_TIMEOUT ?? 30_000)
@@ -57,7 +60,7 @@ export class NativeMcpBridge {
       }
       signal.addEventListener('abort', cancel, { once: true })
       client.onclose = () => signal.removeEventListener('abort', cancel)
-      await client.connect(mcpTransport(config, cwd, signal), { signal, timeout })
+      await client.connect(mcpTransport(config, cwd, signal, source, name), { signal, timeout })
       if (this.closed) throw new Error('MCP 运行时已关闭')
       signal.throwIfAborted()
       const capabilities = client.getServerCapabilities() ?? {}
@@ -142,7 +145,13 @@ export class NativeMcpBridge {
   }
 }
 
-function mcpTransport(config: Record<string, any>, cwd: string, signal: AbortSignal): Transport {
+function mcpTransport(
+  config: Record<string, any>,
+  cwd: string,
+  signal: AbortSignal,
+  source: string,
+  name: string,
+): Transport {
   if (config.type === 'stdio')
     return new StdioClientTransport({
       command: config.command,
@@ -152,21 +161,40 @@ function mcpTransport(config: Record<string, any>, cwd: string, signal: AbortSig
       stderr: 'inherit',
     })
   const requestInit = { headers: config.headers }
-  const fetchWithSignal: typeof fetch = (input, init) => {
+  const authenticatedFetch = mcpOAuthManager().fetch(source, name, config, signal)
+  let oauthFailure: OAuthLoginRequired | undefined
+  const fetchWithSignal: typeof fetch = async (input, init) => {
     // MCP SDK 会把 signal 放在 Request 对象里；覆盖它会让关闭后的 SSE 持续挂起。
     const signals = [signal]
     if (input instanceof Request) signals.push(input.signal)
     if (init?.signal) signals.push(init.signal)
-    return fetch(input, {
-      ...init,
-      signal: AbortSignal.any(signals),
-    })
+    try {
+      return await authenticatedFetch(input, {
+        ...init,
+        signal: AbortSignal.any(signals),
+      })
+    } catch (error) {
+      if (error instanceof OAuthLoginRequired) oauthFailure = error
+      throw error
+    }
   }
-  if (config.type === 'sse')
-    return new SSEClientTransport(new URL(config.url), {
+  if (config.type === 'sse') {
+    const transport = new SSEClientTransport(new URL(config.url), {
       requestInit,
       fetch: fetchWithSignal,
     })
+    const start = transport.start.bind(transport)
+    transport.start = async () => {
+      oauthFailure = undefined
+      try {
+        await start()
+      } catch (error) {
+        // EventSource 会丢掉原始异常类型，保留真实 fetch 失败而非按文本猜测认证状态。
+        throw oauthFailure ?? error
+      }
+    }
+    return transport
+  }
   // 固定 MCP SDK 的 class 与接口对 sessionId 可选性的声明不一致。
   return new StreamableHTTPClientTransport(new URL(config.url), {
     requestInit,

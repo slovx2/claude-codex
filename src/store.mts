@@ -3,6 +3,7 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { normalizeApprovalPolicy } from './approval-policy.mjs'
 import type { CatalogCursor } from './catalog-pagination.mjs'
+import { emptyGoalLedger, type GoalLedger, type GoalState } from './goal-controller.mjs'
 import { ProtocolError, type ThreadRuntimeSettings } from './protocol-contract.mjs'
 import type { ThreadGoal } from './thread-goals.mjs'
 import type {
@@ -56,6 +57,9 @@ export class SessionStore {
       );
       CREATE TABLE IF NOT EXISTS thread_goals (
         thread_id TEXT PRIMARY KEY, goal_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS goal_ledgers (
+        thread_id TEXT PRIMARY KEY, ledger_json TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS thread_usage (
         thread_id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, usage_json TEXT NOT NULL
@@ -694,6 +698,40 @@ export class SessionStore {
     return row ? JSON.parse(row.goal_json) : null
   }
 
+  goalState(threadId: string): GoalState {
+    const row = this.db
+      .prepare('SELECT ledger_json FROM goal_ledgers WHERE thread_id=?')
+      .get(threadId)
+    const goal = this.threadGoal(threadId)
+    const ledger = row ? (JSON.parse(row.ledger_json) as GoalLedger) : emptyGoalLedger()
+    if (!row && goal) ledger.elapsedMs = goal.timeUsedSeconds * 1000
+    return { goal, ledger }
+  }
+
+  mutateGoalState<T>(threadId: string, action: (state: GoalState) => T): T {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const state = this.goalState(threadId)
+      const result = action(state)
+      if (state.goal) this.saveThreadGoal(state.goal)
+      else this.clearThreadGoal(threadId)
+      this.db
+        .prepare(
+          'INSERT INTO goal_ledgers VALUES(?,?) ON CONFLICT(thread_id) DO UPDATE SET ledger_json=excluded.ledger_json',
+        )
+        .run(threadId, JSON.stringify(state.ledger))
+      this.db.exec('COMMIT')
+      return result
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  hasUncertainTools(threadId: string): boolean {
+    return this.uncertainToolIds(threadId).size > 0
+  }
+
   threadUsage(threadId: string): { turnId: string; tokenUsage: ThreadTokenUsage } | null {
     const row = this.db
       .prepare('SELECT turn_id,usage_json FROM thread_usage WHERE thread_id=?')
@@ -814,6 +852,7 @@ export class SessionStore {
         'thread_runtime_settings',
         'tool_executions',
         'thread_goals',
+        'goal_ledgers',
         'thread_usage',
       ])
         this.db.prepare(`DELETE FROM ${table} WHERE thread_id=?`).run(threadId)

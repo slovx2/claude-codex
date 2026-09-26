@@ -299,6 +299,8 @@ export interface FileUpdateChange {
 }
 
 export interface RuntimeTurnContext {
+  goalTools?: boolean
+  trackGoalTools?: boolean
   sandboxPolicy?: RuntimeSandboxPolicy
   dynamicTools?: unknown[]
   threadId: string
@@ -314,6 +316,7 @@ export interface RuntimeTurnContext {
   claudeSessionId: string | null
   forkSession: boolean
   mcpServers: unknown | null
+  mcpConfigSource?: string
   allowedTools: string[] | null
   addDirs: string[]
   enableFileCheckpointing: boolean
@@ -369,6 +372,8 @@ export type RuntimeEvent =
     }
   | { type: 'notice'; level: 'info' | 'warning' | 'error'; message: string }
   | { type: 'usage'; usage: Record<string, unknown> }
+  | { type: 'goal_usage'; messageId: string; usage: Record<string, unknown> }
+  | { type: 'goal_limit'; usageLimited: boolean }
   | {
       type: 'metrics'
       durationMs: number | null
@@ -426,6 +431,9 @@ export interface PermissionDecision {
 }
 
 export interface RuntimeHandlers {
+  onGoalToolCall?(name: string, args: Record<string, unknown>, callId: string): Promise<unknown>
+  onNativeToolIntent?(callId: string, name: string, args: Record<string, unknown>): void
+  onNativeToolResult?(callId: string, result: unknown): void
   onElicitationRequest?(
     request: ElicitationRequest,
     signal: AbortSignal,

@@ -5,7 +5,7 @@ import { saveArtifact } from './artifacts.mjs'
 export type ModelRequest = Record<string, any>
 export type ModelReply =
   | Array<Record<string, unknown>>
-  | { status: number; message: string }
+  | { status: number; message: string; errorType?: string; headers?: Record<string, string> }
   | { disconnect: true }
 export type ModelStep = (request: ModelRequest) => ModelReply | Promise<ModelReply>
 
@@ -45,17 +45,22 @@ export class MockLLM {
           res.write('event: message_start\ndata: {')
           res.socket?.destroy()
         } else {
-          res.writeHead(reply.status, { 'Content-Type': 'application/json', 'Retry-After': '0' })
+          res.writeHead(reply.status, {
+            'Content-Type': 'application/json',
+            'Retry-After': '0',
+            ...reply.headers,
+          })
           res.end(
             JSON.stringify({
               type: 'error',
               error: {
                 type:
-                  reply.status === 401
+                  reply.errorType ??
+                  (reply.status === 401
                     ? 'authentication_error'
                     : reply.status === 429
                       ? 'rate_limit_error'
-                      : 'api_error',
+                      : 'api_error'),
                 message: reply.message,
               },
             }),

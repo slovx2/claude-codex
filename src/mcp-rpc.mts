@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { sdkMcpServers } from './mcp-config.mjs'
+import { mcpOAuthManager } from './mcp-oauth.mjs'
+import { OAuthLoginRequired } from './mcp-oauth-provider.mjs'
 import { NativeMcpBridge } from './native-mcp-bridge.mjs'
 import { ProtocolError } from './protocol-contract.mjs'
 import type { RuntimeHandlers } from './types.mjs'
@@ -9,6 +11,7 @@ export interface McpScope {
   threadId: string | null
   cwd: string
   servers: Record<string, unknown>
+  source: string
 }
 export interface McpCallbacks {
   peerId: string
@@ -46,6 +49,7 @@ export class McpRpc {
           onElicitationRequest: callbacks.elicitation,
         },
         abort.signal,
+        scope.source,
       )
       callbacks.status(name, 'ready', null)
       return await operation(bridge.client(name), abort.signal)
@@ -53,6 +57,7 @@ export class McpRpc {
       const message = error instanceof Error ? error.message : String(error)
       callbacks.status(name, abort.signal.aborted ? 'cancelled' : 'failed', message)
       if (error instanceof ProtocolError) throw error
+      if (error instanceof OAuthLoginRequired) throw error
       throw new ProtocolError(-32001, `MCP ${name} 操作失败: ${message}`)
     } finally {
       try {
@@ -95,33 +100,48 @@ export class McpRpc {
     }
     const data: Record<string, unknown>[] = []
     for (const name of names.slice(offset, offset + limit)) {
-      data.push(
-        await this.withClient(scope, name, callbacks, async (client, signal) => {
-          const caps = client.getServerCapabilities() ?? {}
-          const tools = caps.tools
-            ? await collectPages((cursor) => client.listTools({ cursor }, { signal }))
-            : []
-          const full = detail === 'full' && caps.resources
-          const resources = full
-            ? await collectPages((cursor) => client.listResources({ cursor }, { signal }))
-            : []
-          const templates = full
-            ? await collectPages((cursor) => client.listResourceTemplates({ cursor }, { signal }))
-            : []
-          return {
-            name,
-            tools: Object.fromEntries(tools.map((tool) => [tool.name, tool])),
-            resources,
-            resourceTemplates: templates,
-            serverInfo: client.getServerVersion() ?? null,
-            authStatus: Object.keys(configured[name].headers ?? {}).some(
-              (header) => header.toLowerCase() === 'authorization',
-            )
-              ? 'bearerToken'
-              : 'unsupported',
-          }
-        }),
-      )
+      try {
+        data.push(
+          await this.withClient(scope, name, callbacks, async (client, signal) => {
+            const caps = client.getServerCapabilities() ?? {}
+            const tools = caps.tools
+              ? await collectPages((cursor) => client.listTools({ cursor }, { signal }))
+              : []
+            const full = detail === 'full' && caps.resources
+            const resources = full
+              ? await collectPages((cursor) => client.listResources({ cursor }, { signal }))
+              : []
+            const templates = full
+              ? await collectPages((cursor) => client.listResourceTemplates({ cursor }, { signal }))
+              : []
+            return {
+              name,
+              tools: Object.fromEntries(tools.map((tool) => [tool.name, tool])),
+              resources,
+              resourceTemplates: templates,
+              serverInfo: client.getServerVersion() ?? null,
+              authStatus: Object.keys(configured[name].headers ?? {}).some(
+                (header) => header.toLowerCase() === 'authorization',
+              )
+                ? 'bearerToken'
+                : configured[name].type !== 'stdio' &&
+                    mcpOAuthManager().status(scope.source, name, configured[name]) === 'oAuth'
+                  ? 'oAuth'
+                  : 'unsupported',
+            }
+          }),
+        )
+      } catch (error) {
+        if (!(error instanceof OAuthLoginRequired)) throw error
+        data.push({
+          name,
+          tools: {},
+          resources: [],
+          resourceTemplates: [],
+          serverInfo: null,
+          authStatus: 'notLoggedIn',
+        })
+      }
     }
     const next = offset + data.length
     return {

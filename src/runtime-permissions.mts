@@ -1,6 +1,7 @@
 import { realpathSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { sandboxCommand } from './command-sandbox.mjs'
+import { isGoalTool } from './goal-tools.mjs'
 import { defaultSandboxPolicy, type RuntimeSandboxPolicy } from './sandbox-policy.mjs'
 import type { RuntimeTurnContext } from './types.mjs'
 
@@ -109,6 +110,7 @@ export function deniedTool(
   // 原生计划文件保存在会话专属目录，只豁免此文件，不豁免项目源码或符号链接外逃。
   if (isPlanFile(context, name, input)) return null
   if (isStructuredOutput(context, name)) return null
+  if (context.goalTools && isGoalTool(name)) return null
   const policy = policyFor(context)
   if (
     ['WebFetch', 'WebSearch'].includes(name) &&
@@ -145,10 +147,13 @@ export function runtimePermissionOptions(
         {
           hooks: [
             async (event: Record<string, unknown>, toolUseId: string) => {
-              const structuredOutput = isStructuredOutput(context, String(event.tool_name))
+              const structuredOutput =
+                isStructuredOutput(context, String(event.tool_name)) ||
+                Boolean(context.goalTools && isGoalTool(String(event.tool_name)))
               let reason =
                 event.agent_id &&
-                ['EnterPlanMode', 'ExitPlanMode'].includes(String(event.tool_name))
+                (['EnterPlanMode', 'ExitPlanMode'].includes(String(event.tool_name)) ||
+                  isGoalTool(String(event.tool_name)))
                   ? '子代理不能修改父会话的计划模式'
                   : deniedTool(
                       context,

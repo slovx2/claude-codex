@@ -22,7 +22,7 @@ export class ProtocolClient {
   onTool: ((params: any) => Promise<unknown>) | null = null
   onServerRequest: ((method: string, params: any) => Promise<unknown>) | null = null
 
-  private constructor(home: string, baseURL: string, mock: boolean) {
+  private constructor(home: string, baseURL: string, mock: boolean, auth: 'api-key' | 'oauth') {
     this.home = home
     const endpoint = new URL(baseURL)
     if (
@@ -41,7 +41,9 @@ export class ProtocolClient {
       CODEX_HOME: join(home, 'codex'),
       CLAUDE_CODEX_HOME: join(home, 'adapter'),
       CLAUDE_CONFIG_DIR: join(home, 'claude'),
-      ANTHROPIC_API_KEY: 'test-not-a-secret',
+      ...(auth === 'oauth'
+        ? { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-test-not-a-secret' }
+        : { ANTHROPIC_API_KEY: 'test-not-a-secret' }),
       ANTHROPIC_BASE_URL: baseURL,
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
       DISABLE_AUTOUPDATER: '1',
@@ -116,9 +118,14 @@ export class ProtocolClient {
       this.pending.clear()
     })
   }
-  static async start(home: string, baseURL: string, mock = false): Promise<ProtocolClient> {
+  static async start(
+    home: string,
+    baseURL: string,
+    mock = false,
+    auth: 'api-key' | 'oauth' = 'api-key',
+  ): Promise<ProtocolClient> {
     await mkdir(join(home, 'claude'), { recursive: true })
-    const client = new ProtocolClient(home, baseURL, mock)
+    const client = new ProtocolClient(home, baseURL, mock, auth)
     try {
       await client.request('initialize', {
         clientInfo: { name: 'protocol-test', title: null, version: '1.0.0' },
