@@ -16,6 +16,7 @@ import {
   writeConfigFile,
 } from './config-store.mjs'
 import { dynamicToolResult } from './dynamic-tool-result.mjs'
+import { experimentalFeatureList, experimentalFeatureSet } from './experimental-features.mjs'
 import { FilesystemRpc } from './filesystem-rpc.mjs'
 import { fuzzyPathMatch } from './fuzzy-search.mjs'
 import { GoalController } from './goal-controller.mjs'
@@ -352,6 +353,11 @@ export class CodexClaudeAppServer {
     const nativeMutation = ['thread/fork', 'thread/rollback'].includes(request.method)
     let locked = false
     try {
+      if (
+        request.params === null &&
+        ['experimentalFeature/list', 'experimentalFeature/enablement/set'].includes(request.method)
+      )
+        throw new ProtocolError(-32602, 'params 必须是对象')
       if (typeof threadId === 'string' && this.nativeMutations.has(threadId))
         throw new ProtocolError(-32009, '原生会话正在变更，请稍后重试')
       if (nativeMutation && typeof threadId === 'string') {
@@ -612,11 +618,14 @@ export class CodexClaudeAppServer {
           webSearch: process.env.CLAUDE_CODEX_WEBSEARCH !== '0',
         }
       case 'experimentalFeature/list':
-        return { data: [], nextCursor: null }
+        return experimentalFeatureList(
+          asRecord(params),
+          (id) => this.activePeerByThread.has(id) && this.store.getThread(id) != null,
+        )
       case 'permissionProfile/list':
         return permissionProfileList(asRecord(params))
       case 'experimentalFeature/enablement/set':
-        return { enablement: asRecord(asRecord(params).enablement) }
+        return experimentalFeatureSet(asRecord(params))
       case 'collaborationMode/list':
         return {
           data: [

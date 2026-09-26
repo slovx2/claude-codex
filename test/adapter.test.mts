@@ -4340,7 +4340,9 @@ test('compatibility-only UI methods return schema-shaped responses', async () =>
         params: { enablement: { demo: true } },
       }),
     )
-    assert.deepEqual((await reader.nextResponse(4)).result, { enablement: { demo: true } })
+    const unsupportedFeature = await reader.nextResponse(4)
+    assert.equal(unsupportedFeature.error.code, -32004)
+    assert.equal(unsupportedFeature.result, undefined)
 
     proc.stdin.write(json({ id: 5, method: 'mock/experimentalMethod', params: { value: 'ok' } }))
     assert.deepEqual((await reader.nextResponse(5)).result, { echoed: 'ok' })
