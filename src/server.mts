@@ -363,9 +363,12 @@ export class CodexClaudeAppServer {
       'thread/compact/start',
       'thread/settings/update',
       'turn/start',
+      'review/start',
     ].includes(request.method)
     const nativeMutation =
-      ['thread/fork', 'thread/rollback', 'thread/inject_items'].includes(request.method) ||
+      ['thread/fork', 'thread/rollback', 'thread/inject_items', 'review/start'].includes(
+        request.method,
+      ) ||
       (recoverContext &&
         typeof threadId === 'string' &&
         !!this.store.pendingContextInjection(threadId))
@@ -1746,10 +1749,35 @@ export class CodexClaudeAppServer {
     return {}
   }
 
-  private reviewStart(peer: RpcPeer, params: Record<string, unknown>): unknown {
-    const threadId = stringOr(params.threadId, '')
-    const thread = this.store.getThread(threadId)
-    if (!thread) throw new Error(`unknown thread: ${threadId}`)
+  private async reviewStart(peer: RpcPeer, params: Record<string, unknown>): Promise<unknown> {
+    let threadId = requiredString(params.threadId, 'threadId')
+    let thread = this.store.getThread(threadId)
+    if (!thread) throw new ProtocolError(-32602, '未知会话')
+    if (this.activeTurnByThread.has(threadId) || this.interruptingByThread.has(threadId))
+      throw new ProtocolError(-32009, '活动会话不能开始审查')
+    if (params.delivery != null && params.delivery !== 'inline' && params.delivery !== 'detached')
+      throw new ProtocolError(-32602, '审查 delivery 无效')
+    const target = asRecord(params.target)
+    if (
+      typeof target.type !== 'string' ||
+      !['uncommittedChanges', 'baseBranch', 'commit', 'custom'].includes(target.type)
+    )
+      throw new ProtocolError(-32602, '审查 target 类型无效')
+    if (target.type === 'baseBranch') requiredString(target.branch, 'target.branch')
+    if (target.type === 'commit') {
+      requiredString(target.sha, 'target.sha')
+      if (target.title != null && typeof target.title !== 'string')
+        throw new ProtocolError(-32602, 'target.title 必须是字符串')
+    }
+    if (target.type === 'custom') requiredString(target.instructions, 'target.instructions')
+    // 分叉由原生会话实现；父会话保持原有权限、历史和工作目录。
+    if (params.delivery === 'detached') {
+      const fork = asRecord(await this.threadFork(peer, { threadId }))
+      threadId = requiredString(asRecord(fork.thread).id, 'reviewThreadId')
+      const forked = this.store.getThread(threadId)
+      if (!forked) throw new Error('原生审查分叉缺少会话记录')
+      thread = forked
+    }
     this.activePeerByThread.set(threadId, peer)
     const turnId = newId()
     const review = reviewLabel(params.target)
@@ -1796,10 +1824,16 @@ export class CodexClaudeAppServer {
         method: 'item/started',
         params: { threadId, turnId, item: entered, startedAtMs: nowMillis() },
       })
+      this.notify(peer, {
+        method: 'item/completed',
+        params: { threadId, turnId, item: entered, completedAtMs: nowMillis() },
+      })
       void this.runRuntimeTurn(peer, thread, turn, prompt, {
         model: thread.model,
         effort: thread.reasoningEffort,
       }).catch((error) => {
+        if (this.store.getTurn(turnId)?.status !== 'inProgress') return
+        this.finishReview(peer, threadId, turnId, `审查失败：${error.message}`)
         const completed =
           this.store.completeTurn(turnId, 'failed', { message: error.message }) ?? turn
         this.pendingInteractions.cancelThread(threadId)
@@ -1822,6 +1856,38 @@ export class CodexClaudeAppServer {
       })
     })
     return { turn: responseTurn, reviewThreadId: threadId }
+  }
+
+  private finishReview(
+    peer: RpcPeer | undefined,
+    threadId: string,
+    turnId: string,
+    failure?: string,
+  ): void {
+    const turn = this.store.getTurn(turnId)
+    if (
+      !turn?.items.some((item) => item.type === 'enteredReviewMode') ||
+      turn.items.some((item) => item.type === 'exitedReviewMode')
+    )
+      return
+    const review =
+      failure ??
+      turn.items
+        .flatMap((item) =>
+          item.type === 'agentMessage' || item.type === 'plan' ? [item.text] : [],
+        )
+        .join('\n')
+    const item: ThreadItem = { type: 'exitedReviewMode', id: newId(), review }
+    this.store.appendItem(turnId, item)
+    if (!peer) return
+    this.notify(peer, {
+      method: 'item/started',
+      params: { threadId, turnId, item, startedAtMs: nowMillis() },
+    })
+    this.notify(peer, {
+      method: 'item/completed',
+      params: { threadId, turnId, item, completedAtMs: nowMillis() },
+    })
   }
 
   private threadCompactStart(peer: RpcPeer, params: Record<string, unknown>): unknown {
@@ -3682,6 +3748,7 @@ export class CodexClaudeAppServer {
           completedAtMs: nowMillis(),
         },
       })
+    this.finishReview(peer, thread.id, turn.id)
     this.finishGoal(thread.id, turn.id, 'completed')
     const completed: TurnRecord = this.store.completeTurn(turn.id, 'completed') ?? turn
     recordRunEvent('turn.completed', {
@@ -4081,6 +4148,7 @@ export class CodexClaudeAppServer {
           this.subagentStateByTurn.delete(turnId)
         }
         this.finishGoal(threadId, turnId, 'interrupted')
+        this.finishReview(peer, threadId, turnId, '审查已中断')
         this.store.completeTurn(turnId, 'interrupted', { message: 'interrupted' })
       }
     }
@@ -5156,6 +5224,12 @@ export class CodexClaudeAppServer {
       const turn = this.store.getTurn(turnId)
       if (turn?.status === 'inProgress') {
         this.finishGoal(threadId, turnId, status)
+        this.finishReview(
+          this.activePeerByThread.get(threadId),
+          threadId,
+          turnId,
+          '审查随运行时停止',
+        )
         this.store.completeTurn(turnId, status, error)
       }
       this.store.updateThreadStatus(threadId, { type: 'idle' })

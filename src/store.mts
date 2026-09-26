@@ -1172,6 +1172,7 @@ export class SessionStore {
         row.status !== 'completed',
         row.status === 'completed',
         this.uncertainToolIds(row.thread_id),
+        row.status,
       )
       if (itemsJson === row.items_json) continue
       updateItems.run(itemsJson, row.id)
@@ -1221,6 +1222,7 @@ export class SessionStore {
     terminalizeActivity = true,
     stripCompletedActivity = false,
     uncertainCallIds: ReadonlySet<string> = new Set(),
+    reviewStatus: TurnStatus = 'interrupted',
   ): string {
     let parsed: unknown
     try {
@@ -1301,6 +1303,21 @@ export class SessionStore {
         return item
       })
       .filter((item) => item != null)
+    // 崩溃时无法发出退出事件；恢复只补持久化终止标记，不补造模型结论。
+    // 已有退出标记保持原 ID，重复启动不能创建第二条退出记录。
+    if (
+      reviewStatus !== 'completed' &&
+      items.some((item) => item.type === 'enteredReviewMode') &&
+      !items.some((item) => item.type === 'exitedReviewMode')
+    )
+      items.push({
+        type: 'exitedReviewMode',
+        id: newId(),
+        review:
+          reviewStatus === 'failed'
+            ? '审查失败，未完成；运行时恢复时未记录完整审查结论。'
+            : '审查已中断，未完成；运行时恢复时未记录完整审查结论。',
+      })
     return JSON.stringify(items)
   }
 

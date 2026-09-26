@@ -58,6 +58,8 @@ const result = spawnSync(
     'dist/test/native-experimental-features.test.mjs',
     'dist/test/native-thread-shell.test.mjs',
     'dist/test/native-context-injection.test.mjs',
+    'dist/test/native-review.test.mjs',
+    'dist/test/native-review-recovery.test.mjs',
     'dist/test/native-skills.test.mjs',
     'dist/test/native-skills-management.test.mjs',
     'dist/test/native-hooks.test.mjs',
