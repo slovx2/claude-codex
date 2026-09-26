@@ -1,7 +1,9 @@
 import { ClaudePTranscriptRuntime } from './claude-p-runtime.mjs'
 import { HttpAgentRuntime } from './http-agent-runtime.mjs'
 import { MockRuntime } from './mock-runtime.mjs'
+import type { ContextInjection } from './native-context.mjs'
 import { NativeClaudeRuntime } from './native-runtime.mjs'
+import { ProtocolError } from './protocol-contract.mjs'
 import {
   type RuntimeBackendType,
   type RuntimeConfig,
@@ -70,6 +72,18 @@ class SelectableRuntime implements ClaudeRuntime {
     const runtime = this.runtimeFor(this.config.type)
     if (!runtime.forkSession) throw new Error('当前运行时不支持原生会话分叉')
     return runtime.forkSession(sessionId, cwd, upToMessageId)
+  }
+
+  async appendContext(context: ContextInjection): Promise<{ boundary: string }> {
+    const runtime = this.runtimeFor(this.config.type)
+    if (!runtime.appendContext) throw new ProtocolError(-32004, '当前运行时不支持真实上下文追加')
+    this.activeRuntimeByThread.set(context.threadId, runtime)
+    try {
+      return await runtime.appendContext(context)
+    } finally {
+      if (this.activeRuntimeByThread.get(context.threadId) === runtime)
+        this.activeRuntimeByThread.delete(context.threadId)
+    }
   }
 
   async steer(threadId: string, prompt: string): Promise<void> {

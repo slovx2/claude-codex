@@ -5,6 +5,7 @@ import { normalizeApprovalPolicy } from './approval-policy.mjs'
 import type { CatalogCursor } from './catalog-pagination.mjs'
 import { emptyGoalLedger, type GoalLedger, type GoalState } from './goal-controller.mjs'
 import { type HookEvent, type HookRun, hookItem } from './hook-lifecycle.mjs'
+import type { ContextInjection } from './native-context.mjs'
 import { ProtocolError, type ThreadRuntimeSettings } from './protocol-contract.mjs'
 import type { ThreadGoal } from './thread-goals.mjs'
 import type {
@@ -52,6 +53,12 @@ export class SessionStore {
       CREATE TABLE IF NOT EXISTS native_turn_boundaries (
         turn_id TEXT PRIMARY KEY, message_id TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS context_injections (
+        message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, turn_id TEXT,
+        context_json TEXT NOT NULL, committed INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_context_injection
+        ON context_injections(thread_id) WHERE committed=0;
       CREATE TABLE IF NOT EXISTS tool_executions (
         thread_id TEXT NOT NULL, call_id TEXT NOT NULL, payload_hash TEXT NOT NULL,
         result_json TEXT, PRIMARY KEY(thread_id, call_id)
@@ -843,6 +850,50 @@ export class SessionStore {
     )
   }
 
+  beginContextInjection(context: ContextInjection, turnId: string | null): void {
+    if (this.pendingContextInjection(context.threadId))
+      throw new ProtocolError(-32009, '已有待确认的原生上下文追加')
+    this.db
+      .prepare('INSERT INTO context_injections VALUES (?,?,?,?,0)')
+      .run(context.messageId, context.threadId, turnId, JSON.stringify(context))
+  }
+
+  pendingContextInjection(threadId: string): ContextInjection | null {
+    const row = this.db
+      .prepare('SELECT context_json FROM context_injections WHERE thread_id=? AND committed=0')
+      .get(threadId)
+    return row ? (JSON.parse(row.context_json) as ContextInjection) : null
+  }
+
+  discardContextInjection(messageId: string): void {
+    this.db
+      .prepare('DELETE FROM context_injections WHERE message_id=? AND committed=0')
+      .run(messageId)
+  }
+
+  // 原生追加先确认落盘，再原子提交 session 指针、回退边界和 journal；不制造聊天 Turn。
+  commitContextInjection(context: ContextInjection, boundary: string): void {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const row = this.db
+        .prepare('SELECT turn_id FROM context_injections WHERE message_id=? AND committed=0')
+        .get(context.messageId)
+      const thread = this.getThread(context.threadId)
+      if (!row || !thread) throw new ProtocolError(-32000, '上下文追加持久状态不完整')
+      thread.claudeSessionId = context.sessionId
+      thread.updatedAt = nowSeconds()
+      this.upsertThread(thread)
+      if (row.turn_id) this.saveNativeBoundary(row.turn_id, boundary)
+      this.db
+        .prepare('UPDATE context_injections SET committed=1 WHERE message_id=?')
+        .run(context.messageId)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
   deleteThread(threadId: string): void {
     this.db.exec('BEGIN IMMEDIATE')
     try {
@@ -855,6 +906,7 @@ export class SessionStore {
         )
         .run(threadId)
       for (const table of [
+        'context_injections',
         'turns',
         'submissions',
         'thread_runtime_settings',

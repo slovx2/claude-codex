@@ -472,6 +472,9 @@ export interface RuntimeHandlers {
 }
 
 export interface ClaudeRuntime {
+  appendContext?(
+    context: import('./native-context.mjs').ContextInjection,
+  ): Promise<{ boundary: string }>
   forkSession?(sessionId: string, cwd: string, upToMessageId?: string): Promise<string>
   runTurn(context: RuntimeTurnContext, handlers: RuntimeHandlers): Promise<void>
   steer(threadId: string, prompt: string): Promise<void>

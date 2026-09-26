@@ -25,6 +25,7 @@ import { sdkMcpServers } from './mcp-config.mjs'
 import { elicitationParams, elicitationResponse } from './mcp-elicitation.mjs'
 import { mcpOAuthManager } from './mcp-oauth.mjs'
 import { type McpCallbacks, McpRpc, type McpScope } from './mcp-rpc.mjs'
+import { parseContextItems } from './native-context.mjs'
 import { PendingInteractions } from './pending-interactions.mjs'
 import {
   copyPermissionOverlay,
@@ -100,7 +101,6 @@ import {
   simpleDiff,
   stringListFromEnv,
   stringOr,
-  summarizeInjectedItem,
   summarizeRpcParams,
   threadPermissionProfileId,
   todoWriteToPlanSteps,
@@ -328,7 +328,11 @@ export class CodexClaudeAppServer {
   }
 
   hasActiveTurns(): boolean {
-    return this.activeTurnByThread.size > 0 || this.scheduledGoals.size > 0
+    return (
+      this.activeTurnByThread.size > 0 ||
+      this.scheduledGoals.size > 0 ||
+      this.nativeMutations.size > 0
+    )
   }
 
   setIdleCheckHandler(handler: () => void): void {
@@ -350,7 +354,21 @@ export class CodexClaudeAppServer {
 
   private async handleRequest(peer: RpcPeer, request: JsonRpcRequest): Promise<void> {
     const threadId = asRecord(request.params).threadId
-    const nativeMutation = ['thread/fork', 'thread/rollback'].includes(request.method)
+    const recoverContext = [
+      'thread/resume',
+      'thread/fork',
+      'thread/rollback',
+      'thread/inject_items',
+      'thread/delete',
+      'thread/compact/start',
+      'thread/settings/update',
+      'turn/start',
+    ].includes(request.method)
+    const nativeMutation =
+      ['thread/fork', 'thread/rollback', 'thread/inject_items'].includes(request.method) ||
+      (recoverContext &&
+        typeof threadId === 'string' &&
+        !!this.store.pendingContextInjection(threadId))
     let locked = false
     try {
       if (
@@ -364,6 +382,8 @@ export class CodexClaudeAppServer {
         this.nativeMutations.add(threadId)
         locked = true
       }
+      if (recoverContext && typeof threadId === 'string')
+        await this.recoverContextInjection(threadId)
       const result = await this.dispatch(peer, request.method, request.params ?? {})
       debugLog('rpc.response', {
         peerId: peer.id,
@@ -1347,80 +1367,58 @@ export class CodexClaudeAppServer {
     return { data, nextCursor }
   }
 
-  // Codex App calls thread/inject_items to push hidden context into a thread's
-  // model history — typically file-attachment ingestion, "pin this output as
-  // future context", or App-side memory consolidation. Items are raw Responses
-  // API entries (free-form JSON). Without an implementation the App's
-  // ingestion just disappears, breaking any feature that relies on it.
-  //
-  // Approach: synthesize an injected turn carrying a single agentMessage that
-  // recaps the items as a human-readable block. That turn becomes part of the
-  // thread's transcript so the next runRuntimeTurn picks it up as prior
-  // conversation context, AND it's visible in thread/read so the user can
-  // confirm what was added. We pick agentMessage (instead of a custom type)
-  // for App-compatibility — every Codex App build renders it without needing
-  // a new ThreadItem variant.
-  private threadInjectItems(peer: RpcPeer, params: Record<string, unknown>): unknown {
-    const threadId = stringOr(params.threadId, '')
-    const thread = this.store.getThread(threadId)
-    if (!thread) throw new Error(`unknown thread: ${threadId}`)
-    const items = Array.isArray(params.items) ? params.items : []
-    if (items.length === 0) return {}
+  private async recoverContextInjection(threadId: string): Promise<void> {
+    const pending = this.store.pendingContextInjection(threadId)
+    if (!pending) return
+    if (this.store.getThread(threadId)?.runtimeBackend !== 'claude')
+      throw new ProtocolError(-32004, 'Claude 入口不能追加其他引擎的会话上下文')
+    if (!this.runtime.appendContext)
+      throw new ProtocolError(-32004, '当前运行时不支持真实上下文追加')
+    try {
+      const result = await this.runtime.appendContext(pending)
+      this.store.commitContextInjection(pending, result.boundary)
+    } catch (error) {
+      // 不支持的后端没有启动原生进程，不留下永久阻塞的待确认记录。
+      if (error instanceof ProtocolError && error.code === -32004)
+        this.store.discardContextInjection(pending.messageId)
+      throw error
+    }
+  }
 
-    const now = nowSeconds()
-    const turnId = newId()
-    const itemId = newId()
-    // Compact summary of injected items — try to extract human-readable text
-    // (Responses items often have `content` arrays with text segments).
-    const summary = items
-      .map((raw) => summarizeInjectedItem(raw))
-      .filter(Boolean)
-      .join('\n\n')
-    const text =
-      summary.length > 0
-        ? summary
-        : `[adapter] ${items.length} item(s) injected via thread/inject_items`
-    const agentItem: ThreadItem = {
-      type: 'agentMessage',
-      id: itemId,
-      text,
-      phase: null,
-      memoryCitation: null,
-    }
-    const turn: TurnRecord = {
-      id: turnId,
-      threadId,
-      status: 'completed',
-      startedAt: now,
-      completedAt: now,
-      durationMs: 0,
-      items: [agentItem],
-      diff: '',
-      error: null,
-    }
-    this.store.upsertTurn(turn)
-    thread.updatedAt = now
-    this.store.upsertThread(thread)
-    // Defer notifications past the inject_items response. Firing them
-    // synchronously enqueues them in front of the response on the wire,
-    // which trips clients that do "await response, then read notifications"
-    // (they end up draining the notifications while waiting for the
-    // response, then loop forever looking for already-discarded events).
-    queueMicrotask(() => {
-      this.notify(peer, {
-        method: 'turn/started',
-        params: { threadId, turn: this.toLifecycleTurn(turn) },
-      })
-      this.notify(peer, {
-        method: 'item/completed',
-        params: { threadId, turnId, item: agentItem, completedAtMs: nowMillis() },
-      })
-      this.notify(peer, {
-        method: 'turn/completed',
-        params: { threadId, turn: this.toLifecycleTurn(turn) },
-      })
-    })
-    debugLog('thread.inject_items', { threadId, count: items.length })
+  private async threadInjectItems(
+    _peer: RpcPeer,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    const threadId = requiredString(params.threadId, 'threadId')
+    const thread = this.store.getThread(threadId)
+    if (!thread) throw new ProtocolError(-32602, '未知会话')
+    if (thread.runtimeBackend !== 'claude')
+      throw new ProtocolError(-32004, 'Claude 入口不能追加其他引擎的会话上下文')
+    const content = parseContextItems(params.items)
+    if (!this.runtime.appendContext)
+      throw new ProtocolError(-32004, '当前运行时不支持真实上下文追加')
+    const turns = this.store.listTurns(threadId)
+    if (
+      this.activeTurnByThread.has(threadId) ||
+      this.interruptingByThread.has(threadId) ||
+      turns.some((turn) => turn.status === 'inProgress')
+    )
+      throw new ProtocolError(-32009, '活动或尚未确认的会话不能追加上下文')
+    // 所有 items 先完整校验，再作为单条有序原生消息追加，避免多项半批落盘。
+    this.store.beginContextInjection(
+      {
+        threadId,
+        cwd: thread.cwd,
+        model: resolveClaudeModel(thread.model),
+        sessionId: thread.claudeSessionId ?? newId(),
+        existingSession: !!thread.claudeSessionId,
+        messageId: newId(),
+        content,
+      },
+      turns.at(-1)?.id ?? null,
+    )
+    await this.recoverContextInjection(threadId)
+    debugLog('thread.inject_items', { threadId, count: (params.items as unknown[]).length })
     return {}
   }
 
@@ -1485,6 +1483,7 @@ export class CodexClaudeAppServer {
         this.activeTurnByThread.has(threadId) ||
         this.interruptingByThread.has(threadId) ||
         this.nativeMutations.has(threadId) ||
+        this.store.pendingContextInjection(threadId) ||
         !this.goals.runnable(threadId) ||
         this.store.goalState(threadId).ledger.generation !== generation
       )
@@ -2001,6 +2000,7 @@ export class CodexClaudeAppServer {
     if (
       this.activeTurnByThread.has(threadId) ||
       this.interruptingByThread.has(threadId) ||
+      this.store.pendingContextInjection(threadId) ||
       this.store.listTurns(threadId).some((turn) => turn.status === 'inProgress')
     )
       throw new ProtocolError(-32009, '会话已有活动或结果尚未确认的 Turn')

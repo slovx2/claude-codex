@@ -48,6 +48,7 @@ import { type ApprovalPolicy, allowsApproval, toolApprovalFlow } from './approva
 import { dynamicToolServer } from './dynamic-tools.mjs'
 import { goalToolServer, isGoalTool } from './goal-tools.mjs'
 import { sdkMcpStartupEnvironment } from './mcp-config.mjs'
+import { appendNativeContext, type ContextInjection } from './native-context.mjs'
 import { NativeMcpBridge } from './native-mcp-bridge.mjs'
 import { NativeProcess, succeedsWithin } from './native-process.mjs'
 import { NativeTurnInput } from './native-turn-input.mjs'
@@ -325,6 +326,36 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     const input = this.inputs.get(threadId)
     if (!input) throw new ProtocolError(-32009, '原生回合未启动或已结束')
     input.steer(workflowRuntimePrompt(prompt))
+  }
+
+  async appendContext(context: ContextInjection): Promise<{ boundary: string }> {
+    if (this.processes.has(context.threadId))
+      throw new ProtocolError(-32009, 'Claude CLI 尚未退出，不能追加上下文')
+    let cleaned!: () => void
+    const cleanup = new Promise<void>((resolve) => {
+      cleaned = resolve
+    })
+    const abort = new AbortController()
+    const nativeProcess = new NativeProcess(context.threadId, context.messageId)
+    this.cleanup.set(context.threadId, cleanup)
+    this.processes.set(context.threadId, nativeProcess)
+    this.aborts.set(context.threadId, abort)
+    const timeout = setTimeout(() => abort.abort(new Error('原生上下文追加超时')), 20_000)
+    try {
+      return await appendNativeContext(await this.loadSdk(), context, abort, nativeProcess)
+    } finally {
+      clearTimeout(timeout)
+      try {
+        await nativeProcess.stopIfUnconfirmed()
+        if (!(await nativeProcess.wait(3_000))) await nativeProcess.terminate()
+        if (this.processes.get(context.threadId) === nativeProcess)
+          this.processes.delete(context.threadId)
+      } finally {
+        if (this.aborts.get(context.threadId) === abort) this.aborts.delete(context.threadId)
+        if (this.cleanup.get(context.threadId) === cleanup) this.cleanup.delete(context.threadId)
+        cleaned()
+      }
+    }
   }
 
   async forkSession(sessionId: string, cwd: string, upToMessageId?: string): Promise<string> {

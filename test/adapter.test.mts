@@ -2737,7 +2737,7 @@ test('config/value/write persists arbitrary settings keys across restarts', asyn
   }
 })
 
-test('thread/inject_items appends a synthetic turn carrying the injected text', async () => {
+test('thread/inject_items 不支持真实追加的后端必须拒绝且不能伪造助手历史', async () => {
   const home = await mkdtemp(join(tmpdir(), 'claude-codex-test-'))
   const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -2748,8 +2748,6 @@ test('thread/inject_items appends a synthetic turn carrying the injected text', 
     proc.stdin.write(json({ id: 1, method: 'thread/start', params: { cwd: process.cwd() } }))
     const start = await reader.nextResponse(1)
     const threadId = start.result.thread.id
-
-    // Codex App's actual payload shape: items[] of free-form Responses entries.
     proc.stdin.write(
       json({
         id: 2,
@@ -2760,48 +2758,18 @@ test('thread/inject_items appends a synthetic turn carrying the injected text', 
             {
               type: 'message',
               role: 'user',
-              content: [{ type: 'text', text: 'Here is some pinned context.' }],
-            },
-            {
-              type: 'message',
-              role: 'assistant',
-              content: [{ type: 'text', text: 'Got it, remembered.' }],
+              content: [{ type: 'input_text', text: 'pinned context' }],
             },
           ],
         },
       }),
     )
-
-    // The response + 3 notifications (turn/started, item/completed, turn/completed)
-    // arrive in some order. Drain everything until we've seen all four signals
-    // — don't pre-filter via nextResponse(2) because that would discard the
-    // notifications which are exactly what we want to assert.
-    let sawResponse = false
-    let injectedText = ''
-    for (let i = 0; i < 100; i += 1) {
-      const m = await reader.next()
-      if (m.id === 2 && m.method == null) sawResponse = true
-      if (m.method === 'item/completed' && m.params?.item?.type === 'agentMessage') {
-        injectedText = m.params.item.text
-      }
-      if (sawResponse && injectedText) break
-    }
-    assert.equal(sawResponse, true, 'thread/inject_items response must arrive')
-    assert.match(
-      injectedText,
-      /pinned context/,
-      'injected text must round-trip into the synthetic agentMessage',
-    )
-    assert.match(injectedText, /Got it, remembered/)
-
-    // thread/read should show the synthetic turn so reload preserves it.
+    const response = await reader.nextResponse(2)
+    assert.equal(response.error.code, -32004)
     proc.stdin.write(
       json({ id: 3, method: 'thread/read', params: { threadId, includeTurns: true } }),
     )
-    const read = await reader.nextResponse(3)
-    const turns = read.result.thread.turns
-    assert.ok(turns.length >= 1, 'thread/read should include the injected turn')
-    assert.equal(turns.at(-1).items[0].type, 'agentMessage')
+    assert.deepEqual((await reader.nextResponse(3)).result.thread.turns, [])
   } finally {
     proc.kill()
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 80 })
