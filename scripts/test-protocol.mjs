@@ -57,6 +57,7 @@ const result = spawnSync(
     'dist/test/native-catalog.test.mjs',
     'dist/test/native-skills.test.mjs',
     'dist/test/native-skills-management.test.mjs',
+    'dist/test/native-hooks.test.mjs',
     'dist/test/native-config.test.mjs',
     'dist/test/native-history.test.mjs',
     'dist/test/native-session.test.mjs',

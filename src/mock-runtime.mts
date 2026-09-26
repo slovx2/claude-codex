@@ -197,10 +197,16 @@ export class MockRuntime implements ClaudeRuntime {
     if (/hook check/i.test(context.prompt)) {
       await handlers.onEvent({
         type: 'hook',
+        hookRunId: 'mock-hook',
+        messageId: 'mock-hook-response',
+        phase: 'response',
         hookName: 'PreToolUse',
-        status: 'started',
-        decision: 'allow',
-        message: 'Bash about to run echo hi',
+        hookEvent: 'PreToolUse',
+        outcome: 'success',
+        exitCode: 0,
+        stdout: 'Bash about to run echo hi',
+        stderr: '',
+        output: '',
       })
       await handlers.onEvent({ type: 'text_delta', delta: 'hook check done' })
       await handlers.onEvent({ type: 'completed', success: true, result: 'hook check' })

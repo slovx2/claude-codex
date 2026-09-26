@@ -259,10 +259,16 @@ test('hooks, approval and user questions retain their structured timeline items'
     await handlers.onEvent({ type: 'text_delta', delta: 'Before hook.' })
     await handlers.onEvent({
       type: 'hook',
+      hookRunId: 'fixture-hook',
+      messageId: 'fixture-response',
+      phase: 'response',
       hookName: 'PreToolUse',
-      status: 'done',
-      decision: null,
-      message: 'Checked',
+      hookEvent: 'PreToolUse',
+      outcome: 'success',
+      exitCode: 0,
+      stdout: 'Checked',
+      stderr: '',
+      output: '',
     })
     await handlers.onEvent({ type: 'message_boundary' })
     await handlers.onEvent({ type: 'text_delta', delta: 'Before approval.' })
@@ -321,10 +327,34 @@ test('hook telemetry and duplicate tools do not split a final Markdown response'
       { type: 'tool_use', toolUseId: 'read', toolName: 'Read', input: { file_path: 'app.ts' } },
       { type: 'tool_result', toolUseId: 'read', content: 'file content' },
       { type: 'text_delta', delta: '**Final' },
-      { type: 'hook', hookName: 'Stop', status: 'done', decision: null, message: null },
+      {
+        type: 'hook',
+        hookRunId: 'stop',
+        messageId: 'stop-response',
+        phase: 'response',
+        hookName: 'Stop',
+        hookEvent: 'Stop',
+        outcome: 'success',
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        output: '',
+      },
       { type: 'tool_use', toolUseId: 'read', toolName: 'Read', input: { file_path: 'app.ts' } },
       { type: 'text_delta', delta: ' answer**' },
-      { type: 'hook', hookName: 'Stop', status: 'done', decision: null, message: null },
+      {
+        type: 'hook',
+        hookRunId: 'stop',
+        messageId: 'stop-response',
+        phase: 'response',
+        hookName: 'Stop',
+        hookEvent: 'Stop',
+        outcome: 'success',
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        output: '',
+      },
       { type: 'completed', success: true },
     ]),
   )
@@ -342,6 +372,66 @@ test('completed structured text is not replaced by a fabricated fallback after a
   assert.deepEqual(
     assistantItems(turn.items).map((item) => item.text),
     ['{"result":"real"}'],
+  )
+})
+
+test('Hook 原生 ID 去重并保持唯一终态，未收到结果的运行明确未知', async () => {
+  const hook: Extract<RuntimeEvent, { type: 'hook' }> = {
+    type: 'hook',
+    hookRunId: 'native-run',
+    messageId: 'start',
+    phase: 'started',
+    hookName: 'PreToolUse:Read',
+    hookEvent: 'PreToolUse',
+    outcome: null,
+    exitCode: null,
+    stdout: '',
+    stderr: '',
+    output: '',
+  }
+  const { messages, turn } = await present(
+    emit([
+      hook,
+      { ...hook, messageId: 'duplicate-start' },
+      { ...hook, phase: 'progress', messageId: 'progress', stdout: 'FIRST', output: 'FIRST' },
+      {
+        ...hook,
+        phase: 'response',
+        messageId: 'response',
+        outcome: 'success',
+        exitCode: 0,
+        stdout: 'FIRSTSECOND',
+        output: 'FIRSTSECOND',
+      },
+      {
+        ...hook,
+        phase: 'response',
+        messageId: 'duplicate-response',
+        outcome: 'error',
+        exitCode: 1,
+      },
+      { ...hook, hookRunId: 'pending-run', messageId: 'pending-start' },
+      { type: 'completed', success: true },
+    ]),
+  )
+  const hooks = turn.items.filter((item) => item.type === 'hookPrompt')
+  assert.equal(hooks.length, 2)
+  assert.match(JSON.stringify(hooks[0]), /结果: success/)
+  assert.doesNotMatch(JSON.stringify(hooks[0]), /结果: error/)
+  assert.equal(
+    hooks[0]?.type === 'hookPrompt' &&
+      hooks[0].fragments.filter((fragment) => fragment.text === 'FIRSTSECOND').length,
+    1,
+  )
+  assert.match(JSON.stringify(hooks[1]), /结果: unknown/)
+  const lifecycle = messages.filter((message) => message.params?.item?.type === 'hookPrompt')
+  assert.equal(lifecycle.filter((message) => message.method === 'item/started').length, 2)
+  assert.equal(lifecycle.filter((message) => message.method === 'item/completed').length, 2)
+  const lastHook = lifecycle.at(-1)
+  assert.ok(lastHook)
+  assert.ok(
+    messages.indexOf(lastHook) <
+      messages.findIndex((message) => message.method === 'turn/completed'),
   )
 })
 

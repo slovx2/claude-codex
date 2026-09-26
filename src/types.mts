@@ -384,10 +384,16 @@ export type RuntimeEvent =
     }
   | {
       type: 'hook'
+      hookRunId: string
+      messageId: string
+      phase: 'started' | 'progress' | 'response'
       hookName: string
-      status: string | null
-      decision: string | null
-      message: string | null
+      hookEvent: string
+      outcome: 'success' | 'error' | 'cancelled' | null
+      exitCode: number | null
+      stdout: string
+      stderr: string
+      output: string
     }
   | { type: 'completed'; claudeSessionId?: string | null; result?: string | null; success: boolean }
   | { type: 'error'; message: string }

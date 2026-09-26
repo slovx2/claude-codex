@@ -618,7 +618,7 @@ export class CodexClaudeAppServer {
         if (this.hasActiveTurns()) throw new ProtocolError(-32009, '活动回合期间不能修改技能目录')
         return this.skills.setRoots(asRecord(params))
       case 'hooks/list':
-        return { data: listClaudeHooks(asRecord(params)) }
+        return { data: listClaudeHooks(asRecord(params), this.skillsCwd(peer)) }
       case 'marketplace/add':
         return this.marketplaceAdd(asRecord(params))
       case 'marketplace/remove':
@@ -3289,37 +3289,28 @@ export class CodexClaudeAppServer {
             return
           }
           if (event.type === 'hook') {
-            // Render hook activity once as a structured Codex hookPrompt item.
-            // All fragments of the same hook run share one hookRunId so App
-            // groups them under a single execution; the format matches
-            // Codex's own hookprompt items (one synthetic run id per emit).
-            const hookRunId = newId()
-            const fragments: Array<{ text: string; hookRunId: string }> = [
-              { text: `Hook · ${event.hookName}`, hookRunId },
-            ]
-            if (event.status) fragments.push({ text: `status: ${event.status}`, hookRunId })
-            if (event.decision) fragments.push({ text: `decision: ${event.decision}`, hookRunId })
-            if (event.message) fragments.push({ text: event.message, hookRunId })
-            const hookItem: ThreadItem = { type: 'hookPrompt', id: newId(), fragments }
-            this.store.appendItem(turn.id, hookItem)
-            this.notify(peer, {
-              method: 'item/started',
-              params: {
-                threadId: thread.id,
-                turnId: turn.id,
-                item: hookItem,
-                startedAtMs: nowMillis(),
-              },
-            })
-            this.notify(peer, {
-              method: 'item/completed',
-              params: {
-                threadId: thread.id,
-                turnId: turn.id,
-                item: hookItem,
-                completedAtMs: nowMillis(),
-              },
-            })
+            const update = this.store.recordHookEvent(turn.id, event)
+            if (!update) return
+            if (update.started)
+              this.notify(peer, {
+                method: 'item/started',
+                params: {
+                  threadId: thread.id,
+                  turnId: turn.id,
+                  item: update.item,
+                  startedAtMs: nowMillis(),
+                },
+              })
+            if (update.completed)
+              this.notify(peer, {
+                method: 'item/completed',
+                params: {
+                  threadId: thread.id,
+                  turnId: turn.id,
+                  item: update.item,
+                  completedAtMs: nowMillis(),
+                },
+              })
             return
           }
           if (event.type === 'metrics') {
@@ -3530,6 +3521,21 @@ export class CodexClaudeAppServer {
     disarmWatchdog()
     acceptRuntimeEvents = false
     if (this.stopped) return
+    for (const item of this.store.finishHookRuns(
+      turn.id,
+      'unknown',
+      'SDK 已结束但未返回此 Hook 终态；执行结果不确定，不自动重放',
+    )) {
+      this.notify(peer, {
+        method: 'item/completed',
+        params: {
+          threadId: thread.id,
+          turnId: turn.id,
+          item,
+          completedAtMs: nowMillis(),
+        },
+      })
+    }
     if (outcome.kind === 'timeout') {
       const timeoutSeconds = Math.ceil(watchdogTimeoutMs / 1000)
       const timeoutUnit = timeoutSeconds === 1 ? 'second' : 'seconds'

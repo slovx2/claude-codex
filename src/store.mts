@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { normalizeApprovalPolicy } from './approval-policy.mjs'
 import type { CatalogCursor } from './catalog-pagination.mjs'
 import { emptyGoalLedger, type GoalLedger, type GoalState } from './goal-controller.mjs'
+import { type HookEvent, type HookRun, hookItem } from './hook-lifecycle.mjs'
 import { ProtocolError, type ThreadRuntimeSettings } from './protocol-contract.mjs'
 import type { ThreadGoal } from './thread-goals.mjs'
 import type {
@@ -16,7 +17,7 @@ import type {
   TurnRecord,
   TurnStatus,
 } from './types.mjs'
-import { adapterHome, jsonClone, nowSeconds } from './util.mjs'
+import { adapterHome, jsonClone, newId, nowSeconds } from './util.mjs'
 
 const require = createRequire(import.meta.url)
 
@@ -63,6 +64,10 @@ export class SessionStore {
       );
       CREATE TABLE IF NOT EXISTS thread_usage (
         thread_id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, usage_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS hook_runs (
+        turn_id TEXT NOT NULL, hook_id TEXT NOT NULL, run_json TEXT NOT NULL,
+        PRIMARY KEY(turn_id, hook_id)
       );
     `)
     this.db.exec(`
@@ -842,6 +847,9 @@ export class SessionStore {
     this.db.exec('BEGIN IMMEDIATE')
     try {
       this.db
+        .prepare('DELETE FROM hook_runs WHERE turn_id IN (SELECT id FROM turns WHERE thread_id=?)')
+        .run(threadId)
+      this.db
         .prepare(
           'DELETE FROM native_turn_boundaries WHERE turn_id IN (SELECT id FROM turns WHERE thread_id=?)',
         )
@@ -878,6 +886,7 @@ export class SessionStore {
     if (ids.length === 0) return 0
     const stmt = this.db.prepare('DELETE FROM turns WHERE id = ?')
     for (const row of ids) {
+      this.db.prepare('DELETE FROM hook_runs WHERE turn_id=?').run(row.id)
       this.db.prepare('DELETE FROM native_turn_boundaries WHERE turn_id=?').run(row.id)
       stmt.run(row.id)
     }
@@ -935,11 +944,96 @@ export class SessionStore {
     return turn
   }
 
+  recordHookEvent(
+    turnId: string,
+    event: HookEvent,
+  ): { item: ThreadItem; started: boolean; completed: boolean } | null {
+    const row = this.db
+      .prepare('SELECT run_json FROM hook_runs WHERE turn_id=? AND hook_id=?')
+      .get(turnId, event.hookRunId) as { run_json: string } | undefined
+    const previous: HookRun | null = row ? JSON.parse(row.run_json) : null
+    if (
+      previous?.outcome ||
+      (previous && event.phase === 'started') ||
+      (event.messageId && previous?.messageIds.includes(event.messageId))
+    )
+      return null
+    const run: HookRun = {
+      itemId: previous?.itemId ?? newId(),
+      hookRunId: event.hookRunId,
+      hookName: event.hookName,
+      hookEvent: event.hookEvent,
+      phase: event.phase,
+      outcome: event.phase === 'response' ? (event.outcome ?? 'unknown') : null,
+      exitCode: event.exitCode,
+      stdout: event.stdout,
+      stderr: event.stderr,
+      output: event.output,
+      messageIds: [...(previous?.messageIds ?? []), ...(event.messageId ? [event.messageId] : [])],
+      explanation:
+        !previous && event.phase !== 'started'
+          ? '未收到此 Hook 的开始事件'
+          : (previous?.explanation ?? null),
+    }
+    const item = hookItem(run)
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db
+        .prepare(
+          'INSERT INTO hook_runs(turn_id,hook_id,run_json) VALUES(?,?,?) ON CONFLICT(turn_id,hook_id) DO UPDATE SET run_json=excluded.run_json',
+        )
+        .run(turnId, run.hookRunId, JSON.stringify(run))
+      if (previous) this.updateItem(turnId, item.id, () => item)
+      else this.appendItem(turnId, item)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+    return { item, started: !previous, completed: event.phase === 'response' }
+  }
+
+  finishHookRuns(
+    turnId: string,
+    outcome: 'unknown' | 'cancelled',
+    explanation: string,
+  ): ThreadItem[] {
+    const rows = this.db
+      .prepare('SELECT run_json FROM hook_runs WHERE turn_id=?')
+      .all(turnId) as Array<{ run_json: string }>
+    const items: ThreadItem[] = []
+    for (const row of rows) {
+      const run: HookRun = JSON.parse(row.run_json)
+      if (run.outcome) continue
+      run.outcome = outcome
+      run.explanation = explanation
+      const item = hookItem(run)
+      this.db.exec('BEGIN IMMEDIATE')
+      try {
+        this.db
+          .prepare('UPDATE hook_runs SET run_json=? WHERE turn_id=? AND hook_id=?')
+          .run(JSON.stringify(run), turnId, run.hookRunId)
+        this.updateItem(turnId, item.id, () => item)
+        this.db.exec('COMMIT')
+      } catch (error) {
+        this.db.exec('ROLLBACK')
+        throw error
+      }
+      items.push(item)
+    }
+    return items
+  }
+
   completeTurn(
     turnId: string,
     status: TurnStatus,
     error: unknown | null = null,
   ): TurnRecord | null {
+    this.finishHookRuns(
+      turnId,
+      status === 'interrupted' ? 'cancelled' : 'unknown',
+      '回合已结束，未收到原生 Hook 终态；不能确认执行结果或自动重放',
+    )
     const turn = this.getTurn(turnId)
     if (!turn) return null
     const completedAt = nowSeconds()
@@ -953,6 +1047,15 @@ export class SessionStore {
   }
 
   recoverStaleInProgressTurns(message = 'server restarted before completing turn'): number {
+    const hooks = this.db.prepare('SELECT DISTINCT turn_id FROM hook_runs').all() as Array<{
+      turn_id: string
+    }>
+    for (const hook of hooks)
+      this.finishHookRuns(
+        hook.turn_id,
+        'unknown',
+        '适配器已重启，未收到原生 Hook 终态；执行结果不确定，不自动重放',
+      )
     const rows = this.db
       .prepare('SELECT id, thread_id, started_at, items_json FROM turns WHERE status = ?')
       .all('inProgress') as Array<{

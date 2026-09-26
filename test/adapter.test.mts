@@ -2468,12 +2468,12 @@ test('Claude hook events are rendered as Codex hookPrompt ThreadItems', async ()
       'fragments should include the hook name',
     )
     assert.ok(
-      fragmentTexts.some((t) => /status: started/.test(t)),
+      fragmentTexts.some((t) => /结果: success/.test(t)),
       'fragments should include the status',
     )
     assert.ok(
-      fragmentTexts.some((t) => /decision: allow/.test(t)),
-      'fragments should include the decision',
+      fragmentTexts.some((t) => /退出码: 0/.test(t)),
+      'fragments should include the native exit code',
     )
   } finally {
     proc.kill()

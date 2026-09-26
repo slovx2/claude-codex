@@ -801,6 +801,33 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     message: Record<string, unknown>,
   ): Promise<void> {
     const subtype = String(message.subtype ?? '')
+    if (subtype === 'hook_started' || subtype === 'hook_progress' || subtype === 'hook_response') {
+      if (typeof message.hook_id !== 'string' || !message.hook_id) return
+      await pending.handlers.onEvent({
+        type: 'hook',
+        hookRunId: message.hook_id,
+        messageId: String(message.uuid ?? ''),
+        phase:
+          subtype === 'hook_started'
+            ? 'started'
+            : subtype === 'hook_progress'
+              ? 'progress'
+              : 'response',
+        hookName: String(message.hook_name ?? ''),
+        hookEvent: String(message.hook_event ?? ''),
+        outcome:
+          message.outcome === 'success' ||
+          message.outcome === 'error' ||
+          message.outcome === 'cancelled'
+            ? message.outcome
+            : null,
+        exitCode: typeof message.exit_code === 'number' ? message.exit_code : null,
+        stdout: String(message.stdout ?? ''),
+        stderr: String(message.stderr ?? ''),
+        output: String(message.output ?? ''),
+      })
+      return
+    }
     if (subtype === 'compact_boundary') {
       await pending.handlers.onEvent({
         type: 'context_compacted',
@@ -1610,19 +1637,6 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         message: explicit ?? rateLimitNotice(info),
       })
       return
-    }
-    if (type === 'hook' || type === 'hook_event' || type === 'system_hook_event') {
-      const hookName = String(message.hook_event_name ?? message.hook_name ?? 'hook')
-      const status = stringOrNull(message.status) ?? stringOrNull(message.subtype)
-      const decision = stringOrNull(message.decision) ?? stringOrNull(message.permission_decision)
-      const text = stringOrNull(message.message) ?? stringOrNull(message.reason)
-      await pending.handlers.onEvent({
-        type: 'hook',
-        hookName,
-        status,
-        decision,
-        message: text,
-      })
     }
   }
 }

@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
+import { ProtocolError } from './protocol-contract.mjs'
 
 interface HookMetadata {
   readonly key: string
@@ -36,12 +37,18 @@ const HOOK_EVENT_MAP: Record<string, string> = {
   PreCompact: 'preCompact',
   PostCompact: 'postCompact',
   SessionStart: 'sessionStart',
+  SessionEnd: 'sessionEnd',
+  SubagentStart: 'subagentStart',
+  SubagentStop: 'subagentStop',
   UserPromptSubmit: 'userPromptSubmit',
   Stop: 'stop',
 }
 
-export function listClaudeHooks(params: Record<string, unknown>): HooksListEntry[] {
-  const roots = cwdsFromParams(params)
+export function listClaudeHooks(
+  params: Record<string, unknown>,
+  fallback = process.cwd(),
+): HooksListEntry[] {
+  const roots = cwdsFromParams(params, fallback)
   const userSources = [
     {
       path: join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'settings.json'),
@@ -55,17 +62,22 @@ export function listClaudeHooks(params: Record<string, unknown>): HooksListEntry
       { path: join(cwd, '.claude', 'settings.local.json'), source: 'project' as const },
     ]
     const hooks: HookMetadata[] = []
+    const warnings: string[] = []
     const errors: Array<{ path: string; message: string }> = []
     let order = 0
+    let disabled = false
     for (const { path, source } of sources) {
       if (!existsSync(path)) continue
       let parsed: Record<string, unknown>
       try {
         parsed = JSON.parse(readFileSync(path, 'utf8'))
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+          throw new Error('Hook 配置必须是对象')
       } catch (error) {
         errors.push({ path, message: messageOf(error) })
         continue
       }
+      if (typeof parsed.disableAllHooks === 'boolean') disabled = parsed.disableAllHooks
       const hookConfig = asRecord(parsed.hooks)
       for (const [claudeEvent, eventName] of Object.entries(HOOK_EVENT_MAP)) {
         const matchers = hookConfig[claudeEvent]
@@ -76,17 +88,42 @@ export function listClaudeHooks(params: Record<string, unknown>): HooksListEntry
           const handlers = Array.isArray(matcherEntry.hooks) ? matcherEntry.hooks : []
           for (const rawHandler of handlers) {
             const handler = asRecord(rawHandler)
+            if (!['command', 'prompt', 'agent'].includes(String(handler.type))) {
+              warnings.push(
+                `${path}: ${claudeEvent} 的 ${String(handler.type)} Hook 无对应的客户端处理器类型`,
+              )
+              continue
+            }
+            const handlerType = handler.type as 'command' | 'prompt' | 'agent'
             const command = typeof handler.command === 'string' ? handler.command : null
-            const handlerType =
-              handler.type === 'prompt' ? 'prompt' : handler.type === 'agent' ? 'agent' : 'command'
+            if (
+              (handlerType === 'command' && !command) ||
+              (handlerType !== 'command' && typeof handler.prompt !== 'string') ||
+              (handler.timeout != null &&
+                (typeof handler.timeout !== 'number' ||
+                  !Number.isSafeInteger(handler.timeout) ||
+                  handler.timeout < 0))
+            ) {
+              errors.push({ path, message: `${claudeEvent} 的 Hook 命令、提示词或超时无效` })
+              continue
+            }
             hooks.push({
               key: `${source}:${eventName}:${order}`,
               eventName,
               handlerType,
               matcher,
               command,
-              timeoutSec: typeof handler.timeout === 'number' ? handler.timeout : 60,
-              statusMessage: null,
+              // 原生默认值：https://code.claude.com/docs/en/hooks#common-fields
+              timeoutSec:
+                typeof handler.timeout === 'number'
+                  ? handler.timeout
+                  : handlerType === 'prompt' || claudeEvent === 'UserPromptSubmit'
+                    ? 30
+                    : handlerType === 'agent'
+                      ? 60
+                      : 600,
+              statusMessage:
+                typeof handler.statusMessage === 'string' ? handler.statusMessage : null,
               sourcePath: path,
               source,
               pluginId: null,
@@ -94,7 +131,7 @@ export function listClaudeHooks(params: Record<string, unknown>): HooksListEntry
               enabled: true,
               isManaged: false,
               currentHash: createHash('sha256')
-                .update(`${eventName}:${matcher ?? ''}:${command ?? ''}`)
+                .update(JSON.stringify([eventName, matcher, handler]))
                 .digest('hex'),
               trustStatus: 'trusted',
             })
@@ -103,13 +140,18 @@ export function listClaudeHooks(params: Record<string, unknown>): HooksListEntry
         }
       }
     }
-    return { cwd, hooks, warnings: [], errors }
+    return { cwd, hooks: hooks.map((hook) => ({ ...hook, enabled: !disabled })), warnings, errors }
   })
 }
 
-function cwdsFromParams(params: Record<string, unknown>): string[] {
-  const cwds = Array.isArray(params.cwds) ? params.cwds.map(String).filter(Boolean) : []
-  return cwds.length > 0 ? cwds : [process.cwd()]
+function cwdsFromParams(params: Record<string, unknown>, fallback: string): string[] {
+  if (params.cwds == null) return [fallback]
+  if (
+    !Array.isArray(params.cwds) ||
+    params.cwds.some((cwd) => typeof cwd !== 'string' || !isAbsolute(cwd) || cwd.includes('\0'))
+  )
+    throw new ProtocolError(-32602, 'cwds 必须是绝对路径字符串数组')
+  return params.cwds.length ? [...new Set(params.cwds as string[])] : [fallback]
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
