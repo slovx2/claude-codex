@@ -1695,12 +1695,13 @@ export class CodexClaudeAppServer {
   }
 
   private threadShellCommand(peer: RpcPeer, params: Record<string, unknown>): unknown {
-    const threadId = stringOr(params.threadId, '')
+    const threadId = requiredString(params.threadId, 'threadId')
     const thread = this.store.getThread(threadId)
-    const command = stringOr(params.command, '')
-    if (!command) return {}
+    if (!thread) throw new ProtocolError(-32602, 'threadId 必须指向已有会话')
+    const command = requiredString(params.command, 'command')
+    if (command.includes('\0')) throw new ProtocolError(-32602, 'command 不能包含空字节')
     const shell = process.env.SHELL || '/bin/sh'
-    const cwd = thread?.cwd ?? process.cwd()
+    const cwd = thread.cwd
     const processId = newId()
     debugLog('thread.shellCommand.start', { threadId, processId, cwd, command })
     const child = spawn(shell, ['-lc', command], { cwd, env: process.env, stdio: 'pipe' })
