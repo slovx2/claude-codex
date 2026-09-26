@@ -67,6 +67,7 @@ const result = spawnSync(
     'dist/test/native-goals.test.mjs',
     'dist/test/native-goal-execution.test.mjs',
     'dist/test/native-events.test.mjs',
+    'dist/test/native-event-deletion.test.mjs',
     'dist/test/native-turn-control.test.mjs',
     'dist/test/native-interactions.test.mjs',
     'dist/test/native-interaction-timeout.test.mjs',

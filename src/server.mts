@@ -489,9 +489,15 @@ export class CodexClaudeAppServer {
         if (this.activeTurnByThread.has(threadId))
           throw new ProtocolError(-32009, '活动会话不能删除')
         this.store.deleteThread(threadId)
-        this.notifyThread(threadId, { method: 'thread/closed', params: { threadId } })
+        const subscriber = this.activePeerByThread.get(threadId)
+        // 先移除路由，避免删除调用者的通知被重定向到原订阅者。
         this.activePeerByThread.delete(threadId)
         this.clearThreadState(threadId)
+        if (subscriber) this.notify(subscriber, { method: 'thread/closed', params: { threadId } })
+        const recipients = new Map([[peer.id, peer]])
+        if (subscriber) recipients.set(subscriber.id, subscriber)
+        for (const recipient of recipients.values())
+          this.notify(recipient, { method: 'thread/deleted', params: { threadId } })
         return {}
       }
       case 'thread/turns/items/list':
