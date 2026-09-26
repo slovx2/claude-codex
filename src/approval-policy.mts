@@ -41,6 +41,7 @@ export function allowsApproval(policy: ApprovalPolicy | null, flow: ApprovalFlow
 export function toolApprovalFlow(name: string): ApprovalFlow {
   if (name === 'Bash') return 'sandbox_approval'
   if (name === 'Skill') return 'skill_approval'
-  if (name === 'RequestPermissions') return 'request_permissions'
+  if (name === 'RequestPermissions' || name === 'mcp__tyrs_permissions__request_permissions')
+    return 'request_permissions'
   return 'rules'
 }

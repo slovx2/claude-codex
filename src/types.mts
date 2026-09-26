@@ -299,6 +299,8 @@ export interface FileUpdateChange {
 }
 
 export interface RuntimeTurnContext {
+  permissionTools?: boolean
+  permissionGrants?: import('./permission-grants.mjs').PermissionOverlay
   goalTools?: boolean
   trackGoalTools?: boolean
   sandboxPolicy?: RuntimeSandboxPolicy
@@ -438,6 +440,10 @@ export interface PermissionDecision {
 }
 
 export interface RuntimeHandlers {
+  onPermissionToolCall?(
+    proposal: import('./permission-grants.mjs').PermissionProposal,
+    callId: string,
+  ): Promise<import('./permission-grants.mjs').PermissionGrant>
   onGoalToolCall?(name: string, args: Record<string, unknown>, callId: string): Promise<unknown>
   onNativeToolIntent?(callId: string, name: string, args: Record<string, unknown>): void
   onNativeToolResult?(callId: string, result: unknown): void

@@ -51,6 +51,8 @@ import { sdkMcpStartupEnvironment } from './mcp-config.mjs'
 import { NativeMcpBridge } from './native-mcp-bridge.mjs'
 import { NativeProcess, succeedsWithin } from './native-process.mjs'
 import { NativeTurnInput } from './native-turn-input.mjs'
+import { mergePermissionOverlay, permissionToolName } from './permission-grants.mjs'
+import { permissionToolServer } from './permission-tools.mjs'
 import { ProtocolError, submissionHash } from './protocol-contract.mjs'
 import {
   deniedTool,
@@ -170,6 +172,13 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     this.inputs.set(context.threadId, input)
     this.aborts.set(context.threadId, abort)
     try {
+      if (
+        context.permissionTools &&
+        Object.keys(context.mcpServers ?? {}).some(
+          (name) => name.replace(/[^a-zA-Z0-9_-]/g, '_') === 'tyrs_permissions',
+        )
+      )
+        throw new Error('tyrs_permissions 是内部权限服务保留名称')
       const sdk = await this.loadSdk()
       if (input.isClosed) throw new ProtocolError(-32009, '原生回合启动已取消')
       const options = this.buildOptions(sdk, context, abort)
@@ -187,7 +196,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         // SDKUserMessage envelopes. Always feed the iterable form so we have
         // room to attach image blocks alongside the text and the door is open
         // for mid-turn steer() calls.
-        if (context.dynamicTools?.length || context.goalTools) {
+        if (context.dynamicTools?.length || context.goalTools || context.permissionTools) {
           const nativeIds = new Map<string, string[]>()
           const hooks = options.hooks as { PreToolUse: Array<{ hooks: unknown[] }> }
           hooks.PreToolUse.push({
@@ -222,6 +231,28 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
               (name, args) => {
                 const id = nativeIds.get(`mcp__tyrs_goal__${name}:${submissionHash(args)}`)?.shift()
                 if (!id) throw new Error('缺少原生目标工具调用 ID，禁止执行')
+                return id
+              },
+            )
+          }
+          if (context.permissionTools) {
+            servers.tyrs_permissions = permissionToolServer(
+              async (proposal, callId) => {
+                abort.signal.throwIfAborted()
+                if (context.planMode)
+                  throw new Error('计划模式不能申请新增执行权限；请先确认退出计划')
+                if (!allowsApproval(context.approvalPolicy, 'request_permissions'))
+                  throw new Error('当前审批策略禁止申请新增权限')
+                if (!handlers.onPermissionToolCall) throw new Error('权限执行端不可用')
+                const grant = await handlers.onPermissionToolCall(proposal, callId)
+                abort.signal.throwIfAborted()
+                if (context.planMode) throw new Error('计划模式禁止应用执行授权')
+                context.permissionGrants = mergePermissionOverlay(context.permissionGrants, grant)
+                return grant
+              },
+              (args) => {
+                const id = nativeIds.get(`${permissionToolName}:${submissionHash(args)}`)?.shift()
+                if (!id) throw new Error('缺少原生权限工具调用 ID，禁止申请授权')
                 return id
               },
             )
@@ -586,6 +617,10 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       const toolUseId = options.toolUseID || `tool-${newId()}`
       const pending = this.turns.get(context.turnId)
       if (!pending) return { behavior: 'deny', message: 'turn already finished' }
+      if (context.permissionTools && toolName === permissionToolName)
+        return options.agentID
+          ? { behavior: 'deny', message: '子代理不能申请父会话权限' }
+          : { behavior: 'allow', updatedInput: input }
       if (context.goalTools && isGoalTool(toolName))
         return options.agentID
           ? { behavior: 'deny', message: '子代理不能修改父会话目标' }

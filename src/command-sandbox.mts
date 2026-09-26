@@ -8,6 +8,7 @@ export function sandboxCommand(
   cwd: string,
   params: Record<string, unknown>,
   defaultRoot = process.cwd(),
+  extraWriteRoots: readonly string[] = [],
 ): string[] {
   if (params.permissionProfile != null && params.sandboxPolicy != null)
     throw new ProtocolError(-32602, 'permissionProfile 与 sandboxPolicy 不能同时使用')
@@ -45,6 +46,12 @@ export function sandboxCommand(
         throw new ProtocolError(-32602, 'writableRoots 必须是绝对路径数组')
       roots.push(realpathSync(root))
     }
+  }
+  // 内部权限 overlay 独立于沙箱模式：只读授予外部目录不隐式开放 cwd。
+  for (const root of extraWriteRoots) {
+    if (!isAbsolute(root)) throw new ProtocolError(-32602, '额外授权必须是绝对路径')
+    if (realpathSync(root) !== root) throw new ProtocolError(-32602, '额外授权路径已变化，禁止执行')
+    roots.push(root)
   }
   if (process.platform === 'darwin') {
     const profile = [

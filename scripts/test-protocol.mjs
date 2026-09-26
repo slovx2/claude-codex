@@ -74,7 +74,12 @@ const result = spawnSync(
     'dist/test/native-plan.test.mjs',
     'dist/test/native-permission-policy.test.mjs',
     'dist/test/native-sandbox-policy.test.mjs',
-    ...(process.platform === 'darwin' ? [] : ['dist/test/native-bash-sandbox.test.mjs']),
+    ...(process.platform === 'darwin'
+      ? []
+      : [
+          'dist/test/native-bash-sandbox.test.mjs',
+          'dist/test/native-request-permissions.test.mjs',
+        ]),
     'dist/test/native-cli-failure.test.mjs',
     'dist/test/native-mcp.test.mjs',
     'dist/test/native-mcp-management.test.mjs',
@@ -118,6 +123,7 @@ if (process.platform === 'darwin') {
       `--test-reporter-destination=${resolve(artifacts, 'junit-sandbox.xml')}`,
       `--test-reporter-destination=${resolve(artifacts, 'executions-sandbox.jsonl')}`,
       'dist/test/native-bash-sandbox.test.mjs',
+      'dist/test/native-request-permissions.test.mjs',
     ],
     {
       stdio: 'inherit',

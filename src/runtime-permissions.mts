@@ -2,6 +2,7 @@ import { realpathSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { sandboxCommand } from './command-sandbox.mjs'
 import { isGoalTool } from './goal-tools.mjs'
+import { activePermissionRoots, permissionToolName } from './permission-grants.mjs'
 import { defaultSandboxPolicy, type RuntimeSandboxPolicy } from './sandbox-policy.mjs'
 import type { RuntimeTurnContext } from './types.mjs'
 
@@ -34,15 +35,22 @@ function isStructuredOutput(context: RuntimeTurnContext, name: string): boolean 
 }
 
 function policyFor(context: RuntimeTurnContext): RuntimeSandboxPolicy {
-  return context.sandboxPolicy ?? defaultSandboxPolicy(context.sandboxMode, context.cwd)
+  const policy = context.sandboxPolicy ?? defaultSandboxPolicy(context.sandboxMode, context.cwd)
+  return policy.type === 'dangerFullAccess'
+    ? policy
+    : {
+        ...policy,
+        networkAccess: policy.networkAccess || context.permissionGrants?.networkAccess === true,
+      }
 }
 
 function writableRoots(context: RuntimeTurnContext): string[] {
   const policy = policyFor(context)
-  if (policy.type !== 'workspaceWrite') return []
+  if (policy.type !== 'workspaceWrite') return activePermissionRoots(context.permissionGrants)
   return [
     context.cwd,
     ...policy.writableRoots,
+    ...activePermissionRoots(context.permissionGrants),
     ...(policy.excludeSlashTmp ? [] : ['/tmp']),
     ...(policy.excludeTmpdirEnvVar || !process.env.TMPDIR ? [] : [process.env.TMPDIR]),
   ].map(resolvedTarget)
@@ -63,6 +71,7 @@ export function sandboxedBashInput(context: RuntimeTurnContext, input: Record<st
     context.cwd,
     { sandboxPolicy: policy },
     context.cwd,
+    context.planMode ? [] : activePermissionRoots(context.permissionGrants),
   )
   const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'"
   return { ...input, command: command.map(quote).join(' '), dangerouslyDisableSandbox: false }
@@ -111,6 +120,7 @@ export function deniedTool(
   if (isPlanFile(context, name, input)) return null
   if (isStructuredOutput(context, name)) return null
   if (context.goalTools && isGoalTool(name)) return null
+  if (context.permissionTools && name === permissionToolName) return null
   const policy = policyFor(context)
   if (
     ['WebFetch', 'WebSearch'].includes(name) &&
@@ -118,13 +128,13 @@ export function deniedTool(
   )
     return '当前策略禁止工具访问网络'
   if (name === 'Bash' && typeof input.command !== 'string') return '命令必须是字符串'
-  if (context.planMode || context.sandboxMode === 'read-only')
+  if (context.planMode || (context.sandboxMode === 'read-only' && !fileTools.has(name)))
     return readTools.has(name) || name === 'Bash'
       ? null
       : '当前会话只允许读取，不允许有副作用的工具'
-  if (context.sandboxMode !== 'danger-full-access' && context.sandboxMode !== 'workspace-write')
+  if (!['danger-full-access', 'workspace-write', 'read-only'].includes(String(context.sandboxMode)))
     return '未知权限模式，拒绝执行'
-  if (context.sandboxMode === 'workspace-write' && fileTools.has(name)) {
+  if (context.sandboxMode !== 'danger-full-access' && fileTools.has(name)) {
     const target = input.file_path ?? input.notebook_path
     if (typeof target !== 'string') return '文件工具缺少目标路径'
     const path = resolvedTarget(resolve(context.cwd, target))
@@ -149,12 +159,14 @@ export function runtimePermissionOptions(
             async (event: Record<string, unknown>, toolUseId: string) => {
               const structuredOutput =
                 isStructuredOutput(context, String(event.tool_name)) ||
-                Boolean(context.goalTools && isGoalTool(String(event.tool_name)))
+                Boolean(context.goalTools && isGoalTool(String(event.tool_name))) ||
+                Boolean(context.permissionTools && event.tool_name === permissionToolName)
               let reason =
                 event.agent_id &&
                 (['EnterPlanMode', 'ExitPlanMode'].includes(String(event.tool_name)) ||
-                  isGoalTool(String(event.tool_name)))
-                  ? '子代理不能修改父会话的计划模式'
+                  isGoalTool(String(event.tool_name)) ||
+                  event.tool_name === permissionToolName)
+                  ? '子代理不能修改父会话的计划模式、目标或权限'
                   : deniedTool(
                       context,
                       String(event.tool_name),

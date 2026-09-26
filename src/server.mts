@@ -25,6 +25,13 @@ import { elicitationParams, elicitationResponse } from './mcp-elicitation.mjs'
 import { mcpOAuthManager } from './mcp-oauth.mjs'
 import { type McpCallbacks, McpRpc, type McpScope } from './mcp-rpc.mjs'
 import { PendingInteractions } from './pending-interactions.mjs'
+import {
+  copyPermissionOverlay,
+  mergePermissionOverlay,
+  type PermissionOverlay,
+  parsePermissionGrant,
+  permissionToolName,
+} from './permission-grants.mjs'
 import { ProcessRpc } from './process-rpc.mjs'
 import {
   ProtocolError,
@@ -231,6 +238,8 @@ export class CodexClaudeAppServer {
   private subagentStateByTurn = new Map<string, ActiveSubagentState>()
   private fuzzySessions = new Map<string, { roots: string[] }>()
   private commandSessionAllow = new Map<string, Set<string>>()
+  // 与固定 Codex 一致：会话授权仅在当前 runtime 运行代内跨 Turn 有效。
+  private permissionSessionGrants = new Map<string, PermissionOverlay>()
   private commandProcesses = new Map<string, ChildProcess>()
   private readonly processes = new ProcessRpc()
   private readonly filesystem = new FilesystemRpc()
@@ -300,6 +309,7 @@ export class CodexClaudeAppServer {
   async stop(): Promise<void> {
     if (this.stopped) return
     this.stopped = true
+    this.permissionSessionGrants.clear()
     this.mcpOAuth.close()
     await this.mcp.close()
     this.filesystem.close()
@@ -1303,6 +1313,7 @@ export class CodexClaudeAppServer {
   // leak entries for the lifetime of the process.
   private clearThreadState(threadId: string): void {
     this.commandSessionAllow.delete(threadId)
+    this.permissionSessionGrants.delete(threadId)
     this.elicitationCounts.delete(threadId)
   }
 
@@ -2497,6 +2508,8 @@ export class CodexClaudeAppServer {
         turnId: turn.id,
         purpose: turnPurpose,
         goalTools: turnPurpose === 'normal',
+        permissionTools: turnPurpose === 'normal',
+        permissionGrants: copyPermissionOverlay(this.permissionSessionGrants.get(thread.id)),
         trackGoalTools:
           turnPurpose === 'normal' && this.store.threadGoal(thread.id)?.status === 'active',
         prompt: effectivePrompt,
@@ -2526,6 +2539,63 @@ export class CodexClaudeAppServer {
           : [],
       },
       {
+        onPermissionToolCall: async (proposal, callId) => {
+          if (!turnIsActive()) throw new Error('Turn 已结束，不能申请权限')
+          let itemId = itemIds.get(callId)
+          if (!itemId) {
+            const item = this.toolUseToItem(
+              {
+                type: 'tool_use',
+                toolUseId: callId,
+                toolName: permissionToolName,
+                input: { ...proposal },
+              },
+              thread.cwd,
+            )
+            itemId = item.id
+            itemIds.set(callId, item.id)
+            this.store.appendItem(turn.id, item)
+            this.notify(peer, {
+              method: 'item/started',
+              params: { threadId: thread.id, turnId: turn.id, item, startedAtMs: nowMillis() },
+            })
+          }
+          this.setThreadStatus(peer, thread.id, {
+            type: 'active',
+            activeFlags: ['waitingOnApproval'],
+          })
+          try {
+            const response = await this.sendServerRequest(
+              peer,
+              'item/permissions/requestApproval',
+              newId(),
+              {
+                threadId: thread.id,
+                turnId: turn.id,
+                itemId,
+                environmentId: null,
+                startedAtMs: nowMillis(),
+                cwd: thread.cwd,
+                reason: proposal.reason,
+                permissions: {
+                  network: proposal.permissions.network ?? null,
+                  fileSystem: proposal.permissions.fileSystem ?? null,
+                },
+              },
+            )
+            if (!turnIsActive()) throw new Error('权限请求已取消，未授予权限')
+            const grant = parsePermissionGrant(proposal, response)
+            if (grant.scope === 'session')
+              this.permissionSessionGrants.set(
+                thread.id,
+                mergePermissionOverlay(this.permissionSessionGrants.get(thread.id), grant),
+              )
+            return grant
+          } finally {
+            if (turnIsActive())
+              this.setThreadStatus(peer, thread.id, { type: 'active', activeFlags: [] })
+          }
+        },
         onGoalToolCall: async (name, args, callId) => {
           if (!turnIsActive()) throw new Error('Turn 已结束，不能执行目标工具')
           const result = this.goals.tool(thread.id, turn.id, name, args, callId)
