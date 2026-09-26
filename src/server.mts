@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import { allowsApproval } from './approval-policy.mjs'
 import { buildInfo } from './build-info.mjs'
 import { catalogPagination } from './catalog-pagination.mjs'
-import { listClaudeHooks, listClaudeSkills } from './claude-capabilities.mjs'
+import { listClaudeHooks } from './claude-capabilities.mjs'
 import {
   applyConfigEdits,
   isConfigObject,
@@ -102,6 +102,7 @@ import {
   wrapMcpToolError,
   wrapMcpToolResult,
 } from './server-helpers.mjs'
+import { SkillsRpc } from './skills-rpc.mjs'
 import { PINNED_SECTION_ID, type SessionStore } from './store.mjs'
 import type { ThreadGoal } from './thread-goals.mjs'
 import { patchGitInfo } from './thread-metadata.mjs'
@@ -234,6 +235,7 @@ export class CodexClaudeAppServer {
   private readonly processes = new ProcessRpc()
   private readonly filesystem = new FilesystemRpc()
   private readonly mcp = new McpRpc()
+  private readonly skills = new SkillsRpc()
   private readonly mcpOAuth = mcpOAuthManager()
   private elicitationCounts = new Map<string, number>()
   private configModel = defaultSelectableModelId()
@@ -283,6 +285,7 @@ export class CodexClaudeAppServer {
   }
 
   closePeer(peer: RpcPeer): void {
+    this.skills.closePeer(peer.id)
     this.mcpOAuth.closePeer(peer.id)
     this.mcp.closePeer(peer.id)
     this.pendingInteractions.cancelPeer(peer.id)
@@ -308,6 +311,7 @@ export class CodexClaudeAppServer {
     this.finalizeActiveSubagentsForShutdown('server stopped')
     this.completeActiveTurns('interrupted', { message: 'server stopped' })
     await this.runtime.stop()
+    this.skills.close()
     this.pendingInteractions.close()
     this.store.close()
   }
@@ -318,6 +322,15 @@ export class CodexClaudeAppServer {
 
   setIdleCheckHandler(handler: () => void): void {
     this.idleCheckHandler = handler
+  }
+
+  private skillsCwd(peer: RpcPeer): string {
+    for (const [id, owner] of [...this.activePeerByThread.entries()].reverse())
+      if (owner.id === peer.id) {
+        const thread = this.store.getThread(id)
+        if (thread) return thread.cwd
+      }
+    return this.skills.preferredCwd(peer.id) ?? process.cwd()
   }
 
   private async handleNotification(_peer: RpcPeer, _message: WireMessage): Promise<void> {
@@ -600,7 +613,10 @@ export class CodexClaudeAppServer {
           echoed: typeof asRecord(params).value === 'string' ? asRecord(params).value : null,
         }
       case 'skills/list':
-        return { data: listClaudeSkills(asRecord(params)) }
+        return this.skills.list(peer, asRecord(params), this.skillsCwd(peer))
+      case 'skills/extraRoots/set':
+        if (this.hasActiveTurns()) throw new ProtocolError(-32009, '活动回合期间不能修改技能目录')
+        return this.skills.setRoots(asRecord(params))
       case 'hooks/list':
         return { data: listClaudeHooks(asRecord(params)) }
       case 'marketplace/add':
@@ -625,7 +641,8 @@ export class CodexClaudeAppServer {
       case 'plugin/install':
         return { authPolicy: 'ON_USE', appsNeedingAuth: [] }
       case 'skills/config/write':
-        return { effectiveEnabled: asRecord(params).enabled === true }
+        if (this.hasActiveTurns()) throw new ProtocolError(-32009, '活动回合期间不能修改技能开关')
+        return this.skills.write(asRecord(params), this.skillsCwd(peer))
       case 'plugin/share/list':
         return { data: [] }
       // Stub the three RPC methods Codex App may call but our dispatcher
@@ -1895,6 +1912,7 @@ export class CodexClaudeAppServer {
         mcpServers: null,
         allowedTools: ['Read', 'Glob', 'Grep'],
         addDirs: [],
+        skillOverrides: this.skills.runtimeOverrides(thread.cwd),
         enableFileCheckpointing: false,
         outputFormat: null,
         approvalPolicy: 'never',
@@ -2487,6 +2505,7 @@ export class CodexClaudeAppServer {
         dynamicTools: this.store.threadSettings(thread.id).dynamicTools ?? [],
         allowedTools: defaultAllowedTools(),
         addDirs: stringListFromEnv('CLAUDE_CODEX_ADD_DIRS', []),
+        skillOverrides: this.skills.runtimeOverrides(stringOr(params.cwd, thread.cwd)),
         enableFileCheckpointing: process.env.CLAUDE_CODEX_ENABLE_FILE_CHECKPOINTING === '1',
         outputFormat: claudeOutputFormat(params.outputSchema),
         approvalPolicy,

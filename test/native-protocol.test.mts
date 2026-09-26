@@ -103,6 +103,113 @@ test('FAILURE-SSE：半断流不得成功终结或自动重放', { timeout: 60_0
   }
 })
 
+test('FAILURE-004：有效文本送达后断流失败终结、历史闭合且明确继续后真实写入', {
+  timeout: 60_000,
+}, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'native-valid-stream-disconnect-'))
+  const model = new MockLLM()
+  const url = await model.start()
+  let client = await ProtocolClient.start(home, url)
+  const partial = 'VALID_PARTIAL_BEFORE_DISCONNECT'
+  const target = join(home, 'recovered-after-disconnect.txt')
+  try {
+    let receivedDelta = false
+    model.enqueue(() => ({
+      disconnectAfterText: partial,
+      afterDelta: async () => {
+        await client.notification('item/agentMessage/delta', (params) =>
+          params.delta.includes(partial),
+        )
+        receivedDelta = true
+      },
+    }))
+    const { thread } = await client.request('thread/start', {
+      cwd: home,
+      sandbox: 'danger-full-access',
+      approvalPolicy: 'never',
+    })
+    const params = {
+      threadId: thread.id,
+      clientUserMessageId: 'valid-stream-disconnect',
+      input: [{ type: 'text', text: 'FAILURE_VALID_STREAM_INPUT' }],
+    }
+    const { turn } = await client.request('turn/start', params)
+    const completed = await client.completed(turn.id)
+    assert.equal(receivedDelta, true, '必须证实真实 CLI 已向客户端输出有效文本')
+    assert.equal(completed.status, 'failed', '未收到 message_stop 不能成为成功回复')
+    assert.ok(completed.error)
+    const events = client.trace.filter(
+      (entry) => entry.direction !== 'client' && entry.params?.threadId === thread.id,
+    )
+    const first = events.findIndex((entry) => entry.method === 'turn/started')
+    const last = events.findIndex((entry) => entry.method === 'turn/completed')
+    const deltas = events.filter((entry) => entry.method === 'item/agentMessage/delta')
+    assert.ok(deltas.length > 0)
+    assert.ok(first >= 0 && last > events.indexOf(deltas.at(-1)))
+    assert.equal(events.filter((entry) => entry.method === 'turn/completed').length, 1)
+    const starts = events.filter((entry) => entry.method === 'item/started')
+    const ends = events.filter((entry) => entry.method === 'item/completed')
+    assert.deepEqual(
+      new Set(ends.map((entry) => entry.params.item.id)),
+      new Set(starts.map((entry) => entry.params.item.id)),
+      '失败不能遗留活动条目',
+    )
+    assert.equal(new Set(ends.map((entry) => entry.params.item.id)).size, ends.length)
+    for (const end of ends) assert.ok(events.indexOf(end) < last, '条目必须先于回合结束')
+    const read = await client.request('thread/read', { threadId: thread.id, includeTurns: true })
+    assert.equal(read.thread.turns[0].status, 'failed')
+    assert.equal(read.thread.status.type, 'idle')
+    assert.match(JSON.stringify(read.thread.turns[0].items), new RegExp(partial))
+    assert.equal((await client.request('turn/start', params)).turn.id, turn.id)
+    assert.equal(model.requests.length, 1, '失败提交的重试不能自动请求模型')
+    await client.close()
+    client = await ProtocolClient.start(home, url)
+    const restored = await client.request('thread/resume', { threadId: thread.id })
+    assert.equal(restored.thread.turns[0].status, 'failed')
+    assert.equal((await client.request('turn/start', params)).turn.id, turn.id)
+    assert.equal(model.requests.length, 1, '重启不能重放未知结果的回合')
+    model.enqueue((request) => {
+      assert.match(JSON.stringify(request.messages), /FAILURE_VALID_STREAM_INPUT/)
+      return [
+        {
+          type: 'tool_use',
+          id: 'toolu_after_disconnect',
+          name: 'Write',
+          input: { file_path: target, content: 'EXPLICIT_RECOVERY' },
+        },
+      ]
+    })
+    model.enqueue((request) => {
+      const results = request.messages
+        .flatMap((message: any) => (Array.isArray(message.content) ? message.content : []))
+        .filter(
+          (block: any) =>
+            block.type === 'tool_result' && block.tool_use_id === 'toolu_after_disconnect',
+        )
+      assert.equal(results.length, 1)
+      assert.equal(Boolean(results[0].is_error), false)
+      return [{ type: 'text', text: 'RECOVERED_AFTER_VALID_STREAM_DISCONNECT' }]
+    })
+    const recovery = await client.request('turn/start', {
+      threadId: thread.id,
+      input: [{ type: 'text', text: '明确继续，实际写入恢复文件' }],
+    })
+    assert.equal((await client.completed(recovery.turn.id)).status, 'completed')
+    assert.equal(await readFile(target, 'utf8'), 'EXPLICIT_RECOVERY')
+    const history = await client.request('thread/read', { threadId: thread.id, includeTurns: true })
+    assert.deepEqual(
+      history.thread.turns.map((entry: any) => entry.status),
+      ['failed', 'completed'],
+    )
+    assert.equal(model.requests.length, 3)
+    model.assertConsumed()
+  } finally {
+    await client.close()
+    await model.close()
+    await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
+
 test('FAILURE-401：真实 SDK 认证错误失败终结且不自动重放', { timeout: 60_000 }, async () => {
   const home = await mkdtemp(join(tmpdir(), 'native-failure-'))
   const model = new MockLLM()

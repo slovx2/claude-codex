@@ -399,9 +399,19 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         ...process.env,
         ...sdkMcpStartupEnvironment(context.mcpServers),
         CLAUDE_CODE_MAX_RETRIES: '0',
+        CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: '1',
       },
       ...runtimePermissionOptions(context, originalBashInputs),
-      settings: { plansDirectory: relative(context.cwd, planDirectory(context)) },
+      settings: {
+        plansDirectory: relative(context.cwd, planDirectory(context)),
+        // Skill 的内联 shell 不经过 Bash hook；受限会话只能通过常规工具执行命令。
+        ...(context.planMode ||
+        context.sandboxMode !== 'danger-full-access' ||
+        context.approvalPolicy !== 'never'
+          ? { disableSkillShellExecution: true }
+          : {}),
+        ...(context.skillOverrides ? { skillOverrides: context.skillOverrides } : {}),
+      },
       disallowedTools: ['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup'],
       stderr: (data: string) => process.stderr.write(data),
       onElicitation: (async (request, { signal }) => {

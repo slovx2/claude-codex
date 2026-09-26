@@ -319,6 +319,7 @@ export interface RuntimeTurnContext {
   mcpConfigSource?: string
   allowedTools: string[] | null
   addDirs: string[]
+  skillOverrides?: Record<string, 'on' | 'off'>
   enableFileCheckpointing: boolean
   outputFormat: unknown | null
   approvalPolicy: ApprovalPolicy | null

@@ -1,22 +1,7 @@
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-
-interface SkillMetadata {
-  readonly name: string
-  readonly description: string
-  readonly shortDescription?: string
-  readonly path: string
-  readonly scope: 'user' | 'repo' | 'system' | 'admin'
-  readonly enabled: boolean
-}
-
-interface SkillsListEntry {
-  readonly cwd: string
-  readonly skills: readonly SkillMetadata[]
-  readonly errors: ReadonlyArray<{ readonly path: string; readonly message: string }>
-}
 
 interface HookMetadata {
   readonly key: string
@@ -41,58 +26,6 @@ interface HooksListEntry {
   readonly hooks: readonly HookMetadata[]
   readonly warnings: readonly string[]
   readonly errors: ReadonlyArray<{ readonly path: string; readonly message: string }>
-}
-
-export function listClaudeSkills(params: Record<string, unknown>): SkillsListEntry[] {
-  const roots = cwdsFromParams(params)
-  const userSkills = readSkillDir(
-    join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'skills'),
-    'user',
-  )
-  return roots.map((cwd) => {
-    const repo = readSkillDir(join(cwd, '.claude', 'skills'), 'repo')
-    return {
-      cwd,
-      skills: [...userSkills.skills, ...repo.skills],
-      errors: [...userSkills.errors, ...repo.errors],
-    }
-  })
-}
-
-function readSkillDir(
-  dir: string,
-  scope: 'user' | 'repo',
-): { skills: SkillMetadata[]; errors: Array<{ path: string; message: string }> } {
-  const skills: SkillMetadata[] = []
-  const errors: Array<{ path: string; message: string }> = []
-  if (!existsSync(dir)) return { skills, errors }
-  let entries: string[] = []
-  try {
-    entries = readdirSync(dir)
-  } catch (error) {
-    errors.push({ path: dir, message: messageOf(error) })
-    return { skills, errors }
-  }
-  for (const entry of entries) {
-    const skillPath = join(dir, entry)
-    const manifest = join(skillPath, 'SKILL.md')
-    try {
-      if (!statSync(skillPath).isDirectory() || !existsSync(manifest)) continue
-      const frontmatter = parseFrontmatter(readFileSync(manifest, 'utf8'))
-      const name = frontmatter.name || entry
-      skills.push({
-        name,
-        description: frontmatter.description || '',
-        ...(frontmatter.description ? { shortDescription: frontmatter.description } : {}),
-        path: skillPath,
-        scope,
-        enabled: true,
-      })
-    } catch (error) {
-      errors.push({ path: manifest, message: messageOf(error) })
-    }
-  }
-  return { skills, errors }
 }
 
 // Claude events without a Codex hook surface, such as Notification, are intentionally dropped.
@@ -177,22 +110,6 @@ export function listClaudeHooks(params: Record<string, unknown>): HooksListEntry
 function cwdsFromParams(params: Record<string, unknown>): string[] {
   const cwds = Array.isArray(params.cwds) ? params.cwds.map(String).filter(Boolean) : []
   return cwds.length > 0 ? cwds : [process.cwd()]
-}
-
-function parseFrontmatter(text: string): { name?: string; description?: string } {
-  if (!text.startsWith('---')) return {}
-  const end = text.indexOf('\n---', 3)
-  if (end < 0) return {}
-  const body = text.slice(3, end)
-  const out: { name?: string; description?: string } = {}
-  for (const line of body.split('\n')) {
-    const match = /^\s*(name|description)\s*:\s*(.+?)\s*$/.exec(line)
-    if (!match) continue
-    const value = (match[2] ?? '').replace(/^["']|["']$/g, '')
-    if (match[1] === 'name') out.name = value
-    else out.description = value
-  }
-  return out
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

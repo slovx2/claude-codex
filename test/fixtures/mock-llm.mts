@@ -7,6 +7,7 @@ export type ModelReply =
   | Array<Record<string, unknown>>
   | { status: number; message: string; errorType?: string; headers?: Record<string, string> }
   | { disconnect: true }
+  | { disconnectAfterText: string; afterDelta: () => Promise<void> }
 export type ModelStep = (request: ModelRequest) => ModelReply | Promise<ModelReply>
 
 // 只替换模型 HTTP 接口。SDK、CLI、工具及会话文件都使用真实实现。
@@ -40,7 +41,33 @@ export class MockLLM {
       if (!step) throw new Error('收到未计划的模型请求')
       const reply = await step(body)
       if (!Array.isArray(reply)) {
-        if ('disconnect' in reply) {
+        if ('disconnectAfterText' in reply) {
+          if (responsesAPI || !body.stream) throw new Error('有效半断流必须使用 Claude 原生 SSE')
+          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
+          this.event(res, 'message_start', {
+            message: {
+              id: `msg_${randomUUID()}`,
+              type: 'message',
+              role: 'assistant',
+              model: body.model,
+              content: [],
+              stop_reason: null,
+              stop_sequence: null,
+              usage: { input_tokens: 100, output_tokens: 0 },
+            },
+          })
+          this.event(res, 'content_block_start', {
+            index: 0,
+            content_block: { type: 'text', text: '' },
+          })
+          this.event(res, 'content_block_delta', {
+            index: 0,
+            delta: { type: 'text_delta', text: reply.disconnectAfterText },
+          })
+          // 等实际客户端收到增量后再断开，避免只测到还未送达数据的连接失败。
+          await reply.afterDelta()
+          res.socket?.destroy()
+        } else if ('disconnect' in reply) {
           res.writeHead(200, { 'Content-Type': 'text/event-stream' })
           res.write('event: message_start\ndata: {')
           res.socket?.destroy()
