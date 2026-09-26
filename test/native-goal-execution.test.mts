@@ -348,7 +348,11 @@ test('GOAL-002：用户中断后重启只在 resume 续跑，active 分叉独立
       archived.close()
     }
     assert.equal((await client.completed(third)).status, 'interrupted')
-    await client.raw('thread/goal/get', { threadId: thread.id }, -32600)
+    assert.equal(
+      (await client.request('thread/goal/get', { threadId: thread.id })).goal.status,
+      'active',
+      '归档目标仍可读取，中断不能隐式更改目标状态',
+    )
     await client.request('thread/unarchive', { threadId: thread.id })
     await delay(250)
     assert.equal(llm.requests.length, 3, '取消归档不应自动执行')

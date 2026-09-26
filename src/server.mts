@@ -1391,7 +1391,7 @@ export class CodexClaudeAppServer {
   }
 
   private threadGoalGet(params: Record<string, unknown>): unknown {
-    return { goal: this.store.threadGoal(this.goalThreadID(params)) }
+    return { goal: this.store.threadGoal(this.goalThreadID(params, true)) }
   }
 
   private threadGoalClear(params: Record<string, unknown>): unknown {
@@ -1405,11 +1405,12 @@ export class CodexClaudeAppServer {
     return { cleared }
   }
 
-  private goalThreadID(params: Record<string, unknown>): string {
+  private goalThreadID(params: Record<string, unknown>, allowArchived = false): string {
     const threadId = requiredString(params.threadId, 'threadId')
     const thread = this.store.getThread(threadId)
     if (!thread) throw new ProtocolError(-32602, '未知会话')
-    if (thread.archived) throw new ProtocolError(-32600, '会话已归档')
+    // 归档保留元数据查询契约，但不允许修改目标或从归档态启动续跑。
+    if (thread.archived && !allowArchived) throw new ProtocolError(-32600, '会话已归档')
     return threadId
   }
 
