@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import { mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
+import { McpOAuthManager } from '../src/mcp-oauth.mjs'
 import { saveArtifact } from './fixtures/artifacts.mjs'
 import { OAuthDaemonFixture, OAuthMcpFixture } from './fixtures/mcp-oauth.mjs'
 import { MockLLM } from './fixtures/mock-llm.mjs'
@@ -468,3 +470,69 @@ test('MCP-012：真实 OAuth 回调在 token 交换中断线，不能保存凭�
     assert.equal(model.requests.length, 0)
   })
 })
+
+// 断开与迟到 token 在同一轮 I/O 到达时，适配器已读到的断开必须先于凭据提交生效。
+for (const order of ['disconnect-first', 'token-first'] as const)
+  test(`MCP-012：回调断开与迟到 token 同轮到达（${order}）不能接受凭据`, {
+    timeout: 30_000,
+  }, async () => {
+    const home = await mkdtemp(join(tmpdir(), 'native-mcp-oauth-late-'))
+    const fixture = new OAuthMcpFixture(join(home, 'must-not-exist'))
+    const manager = new McpOAuthManager(home)
+    try {
+      const config = {
+        type: 'http',
+        url: await fixture.start(),
+        headers: { 'X-Resource-Only': 'resource-test-secret' },
+      }
+      let completed!: (value: { success: boolean }) => void
+      const completion = new Promise<{ success: boolean }>((resolve) => {
+        completed = resolve
+      })
+      const { authorizationUrl } = await manager.login(
+        'user',
+        config,
+        { name: 'secure', timeoutSecs: 10 },
+        'peer',
+        completed,
+      )
+      const authorization = await fetch(authorizationUrl, { redirect: 'manual' })
+      const callback = new URL(authorization.headers.get('location')!)
+      const gate = fixture.pauseTokenExchange()
+      const browser = connect(Number(callback.port), callback.hostname)
+      browser.on('error', () => {})
+      browser.resume()
+      await new Promise((resolve) => browser.once('connect', resolve))
+      browser.write(
+        `GET ${callback.pathname}${callback.search} HTTP/1.1\r\nHost: ${callback.host}\r\n\r\n`,
+      )
+      await gate.started
+      // 只让出微任务和 nextTick：token 响应与断开都已写出，但适配器尚未回到事件循环。
+      const written = async () => {
+        for (let i = 0; i < 100 && fixture.exchanges === 0; i++) await Promise.resolve()
+        assert.equal(fixture.exchanges, 1)
+        await new Promise((resolve) => process.nextTick(resolve))
+      }
+      if (order === 'disconnect-first') {
+        browser.destroy()
+        gate.release()
+        await written()
+      } else {
+        gate.release()
+        await written()
+        browser.destroy()
+      }
+      // 回环投递可能异步；同步阻塞让两者都进入内核缓冲，下一轮 poll 同批看到断开和 token 响应。
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+      assert.equal((await completion).success, false, '已断开的回调不能宣布授权成功')
+      assert.equal(fixture.exchanges, 1, '迟到 token 响应必须真实产生')
+      assert.deepEqual(await readdir(join(home, 'mcp-oauth')).catch(() => []), [])
+      assert.equal(manager.status('user', 'secure', config), 'notLoggedIn')
+      assert.equal(fixture.effects, 0)
+      assert.deepEqual(fixture.errors, [])
+    } finally {
+      manager.close()
+      await fixture.close()
+      await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    }
+  })

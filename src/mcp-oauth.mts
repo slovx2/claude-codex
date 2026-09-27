@@ -108,10 +108,13 @@ export class McpOAuthManager {
     pending.timer.unref()
     pending.server.on('request', async (request, response) => {
       let ownsFlow = false
-      response.once('close', () => {
+      const disconnected = () => {
         // 正常 res.end 之后也会 close，只有提前断开才撤销本次授权。
         if (ownsFlow && !response.writableEnded) pending.finish(false, 'OAuth 回调连接已断开')
-      })
+      }
+      response.once('close', disconnected)
+      // FIN/RST 读到后 response close 还要晚一轮事件循环；只等 close 会在这期间接受迟到 token。
+      request.socket.once('end', disconnected).once('error', disconnected)
       const respond = (status: number, message: string) =>
         response
           .writeHead(status, {
@@ -159,7 +162,10 @@ export class McpOAuthManager {
           })) !== 'AUTHORIZED'
         )
           throw new Error()
+        // token 响应可能与回调断开同批到达；先让已到达的断开事件分发，再在唯一提交点复核。
+        await new Promise<void>((resolve) => setImmediate(resolve))
         abort.signal.throwIfAborted()
+        if (request.socket.destroyed) throw new Error()
         this.store.write(provider.record)
         respond(200, 'MCP 授权完成，可以关闭此页面。')
         pending.finish(true)
