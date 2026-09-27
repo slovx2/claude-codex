@@ -55,6 +55,7 @@ import { NativeTurnInput } from './native-turn-input.mjs'
 import { mergePermissionOverlay, permissionToolName } from './permission-grants.mjs'
 import { permissionToolServer } from './permission-tools.mjs'
 import { ProtocolError, submissionHash } from './protocol-contract.mjs'
+import { type NativeRateLimitInfo, rateLimitCredentialScope } from './rate-limits.mjs'
 import {
   deniedTool,
   isPlanFile,
@@ -83,6 +84,7 @@ import {
 type ClaudeSdk = typeof import('@anthropic-ai/claude-agent-sdk')
 
 interface PendingTurn {
+  credentialScope: string | null
   context: RuntimeTurnContext
   handlers: RuntimeHandlers
   query: Query
@@ -158,6 +160,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
   private processes = new Map<string, NativeProcess>()
 
   async runTurn(context: RuntimeTurnContext, handlers: RuntimeHandlers): Promise<void> {
+    const credentialScope = rateLimitCredentialScope(context.cwd)
     if (this.processes.has(context.threadId))
       throw new ProtocolError(-32009, '上一个 Claude CLI 尚未确认退出，禁止启动新回合')
     let cleaned!: () => void
@@ -263,6 +266,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
 
         const query = sdk.query({ prompt: input, options })
         const pending: PendingTurn = {
+          credentialScope,
           context,
           handlers,
           query,
@@ -1684,6 +1688,17 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
   ): Promise<void> {
     if (type === 'rate_limit' || type === 'rate_limit_event') {
       const info = message.rate_limit_info as Record<string, unknown> | undefined
+      if (
+        info &&
+        ['allowed', 'allowed_warning', 'rejected'].includes(String(info.status)) &&
+        pending.credentialScope &&
+        pending.credentialScope === rateLimitCredentialScope(pending.context.cwd)
+      )
+        await pending.handlers.onEvent({
+          type: 'rate_limits',
+          credentialScope: pending.credentialScope,
+          info: { ...info } as NativeRateLimitInfo,
+        })
       if (
         pending.context?.goalTools &&
         info?.status === 'rejected' &&

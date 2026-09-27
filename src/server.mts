@@ -52,6 +52,7 @@ import {
   providerLoopSelectionInputFromEnv,
   resolveProviderLoopSelection,
 } from './provider-loop-selection.mjs'
+import { AccountRateLimits } from './rate-limits.mjs'
 import { recordRunEvent } from './run-registry.mjs'
 import { normalizeRuntimeType } from './runtime-config.mjs'
 import { defaultSandboxPolicy, parseSandboxPolicy, policyFromParams } from './sandbox-policy.mjs'
@@ -217,6 +218,8 @@ function turnItemsView(value: unknown): TurnItemsView {
 }
 
 export class CodexClaudeAppServer {
+  private readonly rateLimits = new AccountRateLimits()
+  private readonly accountPeers = new Set<RpcPeer>()
   private pendingInteractions = new PendingInteractions()
   private activePeerByThread = new Map<string, RpcPeer>()
   private peerFeatures = new WeakMap<RpcPeer, PeerFeatures>()
@@ -295,6 +298,7 @@ export class CodexClaudeAppServer {
   }
 
   closePeer(peer: RpcPeer): void {
+    this.accountPeers.delete(peer)
     this.skills.closePeer(peer.id)
     this.mcpOAuth.closePeer(peer.id)
     this.mcp.closePeer(peer.id)
@@ -452,7 +456,6 @@ export class CodexClaudeAppServer {
         'account/rateLimitResetCredit/consume',
         'account/usage/read',
         'account/workspaceMessages/read',
-        'account/rateLimits/read',
         'feedback/upload',
         'attestation/generate',
         'environment/add',
@@ -463,6 +466,7 @@ export class CodexClaudeAppServer {
       case 'runtime/info':
         return buildInfo()
       case 'initialize': {
+        this.accountPeers.add(peer)
         const initParams = asRecord(params)
         const clientInfo = asRecord(initParams.clientInfo)
         const capabilities = asRecord(initParams.capabilities)
@@ -2016,6 +2020,7 @@ export class CodexClaudeAppServer {
       {
         onEvent: async (event) => {
           if (this.stopped) return
+          if (event.type === 'rate_limits') this.recordRateLimits(event)
           if (event.type === 'context_compacted') {
             compacted = true
             if (event.messageId) this.store.saveNativeBoundary(turnId, event.messageId)
@@ -2766,6 +2771,10 @@ export class CodexClaudeAppServer {
           // They are stale and must never resurrect a child or an inProgress
           // item in the Codex App.
           if (!turnIsActive()) return
+          if (event.type === 'rate_limits') {
+            this.recordRateLimits(event)
+            return
+          }
           if (event.type === 'native_boundary') {
             this.store.saveNativeBoundary(turn.id, event.messageId)
             return
@@ -4505,16 +4514,13 @@ export class CodexClaudeAppServer {
   }
 
   private accountRateLimits(): unknown {
-    const rateLimits = {
-      limitId: 'claude-code',
-      limitName: 'Claude Code',
-      primary: null,
-      secondary: null,
-      credits: null,
-      planType: null,
-      rateLimitReachedType: null,
-    }
-    return { rateLimits, rateLimitsByLimitId: { 'claude-code': rateLimits } }
+    return this.rateLimits.read()
+  }
+
+  private recordRateLimits(event: Extract<RuntimeEvent, { type: 'rate_limits' }>): void {
+    for (const rateLimits of this.rateLimits.record(event.credentialScope, event.info))
+      for (const peer of this.accountPeers)
+        this.notify(peer, { method: 'account/rateLimits/updated', params: { rateLimits } })
   }
 
   // Accumulates Claude Agent SDK token usage per thread and pushes a
@@ -4542,14 +4548,7 @@ export class CodexClaudeAppServer {
       method: 'thread/tokenUsage/updated',
       params: { threadId, turnId, tokenUsage },
     })
-    // NOTE: previously we also pushed `account/rateLimits/updated` here on
-    // every token-usage event "to keep the UI in sync". That backfired —
-    // Codex App treats every such notification as a fresh rate-limit signal
-    // and surfaces it as a transient warning banner, so the user saw a
-    // rate-limit pop on every assistant turn. Since we don't actually have
-    // real rate-limit data from the Anthropic SDK (no headers exposed), the
-    // notification was empty noise. The initial snapshot still fires once
-    // post-handshake in `initialize` so the UI populates on first connect.
+    // token usage 不能推算账户配额；只有原生 rate_limit_event 更新限额快照。
   }
 
   private marketplaceAdd(params: Record<string, unknown>): unknown {

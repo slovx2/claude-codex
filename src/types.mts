@@ -347,6 +347,11 @@ export interface ImageInput {
 }
 
 export type RuntimeEvent =
+  | {
+      type: 'rate_limits'
+      credentialScope: string | null
+      info: import('./rate-limits.mjs').NativeRateLimitInfo
+    }
   | { type: 'plan_mode'; enabled: boolean }
   | { type: 'plan_text'; text: string }
   | { type: 'context_compacted'; messageId: string }

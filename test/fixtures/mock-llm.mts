@@ -1,14 +1,18 @@
 import { randomUUID } from 'node:crypto'
-import { createServer, type ServerResponse } from 'node:http'
+import { createServer, type IncomingHttpHeaders, type ServerResponse } from 'node:http'
 import { saveArtifact } from './artifacts.mjs'
 
 export type ModelRequest = Record<string, any>
 export type ModelReply =
   | Array<Record<string, unknown>>
+  | { content: Array<Record<string, unknown>>; headers: Record<string, string> }
   | { status: number; message: string; errorType?: string; headers?: Record<string, string> }
   | { disconnect: true }
   | { disconnectAfterText: string; afterDelta: () => Promise<void> }
-export type ModelStep = (request: ModelRequest) => ModelReply | Promise<ModelReply>
+export type ModelStep = (
+  request: ModelRequest,
+  headers: IncomingHttpHeaders,
+) => ModelReply | Promise<ModelReply>
 
 // 只替换模型 HTTP 接口。SDK、CLI、工具及会话文件都使用真实实现。
 export class MockLLM {
@@ -39,8 +43,8 @@ export class MockLLM {
       this.requests.push(body)
       const step = this.steps.shift()
       if (!step) throw new Error('收到未计划的模型请求')
-      const reply = await step(body)
-      if (!Array.isArray(reply)) {
+      const reply = await step(body, req.headers)
+      if (!Array.isArray(reply) && !('content' in reply)) {
         if ('disconnectAfterText' in reply) {
           if (responsesAPI || !body.stream) throw new Error('有效半断流必须使用 Claude 原生 SSE')
           res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
@@ -95,7 +99,9 @@ export class MockLLM {
         }
         return
       }
-      const content = reply
+      const content = Array.isArray(reply) ? reply : reply.content
+      if (!Array.isArray(reply))
+        for (const [name, value] of Object.entries(reply.headers)) res.setHeader(name, value)
       if (responsesAPI) {
         res.writeHead(200, { 'Content-Type': 'text/event-stream' })
         const id = `resp_${randomUUID()}`

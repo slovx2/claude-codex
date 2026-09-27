@@ -3,7 +3,6 @@ export const openAIOnlyRequests: ReadonlyArray<readonly [string, unknown]> = [
   ['account/login/start', { type: 'apiKey', apiKey: 'test-not-a-secret' }],
   ['account/login/cancel', { loginId: 'test-login' }],
   ['account/logout', null],
-  ['account/rateLimits/read', null],
   ['account/usage/read', null],
   ['account/rateLimitResetCredit/consume', { idempotencyKey: 'test-reset' }],
   ['account/sendAddCreditsNudgeEmail', { creditType: 'credits' }],

@@ -201,24 +201,26 @@ test('原生结构化结果缺失或不符合 schema 时不能用文字合成成
 })
 
 test('ordinary subscription limit updates are quiet and real warnings retain context', async () => {
-  const events = await collect([
-    { type: 'rate_limit_event', rate_limit_info: { status: 'allowed', utilization: 0.2 } },
-    { type: 'rate_limit_event', rate_limit_info: {} },
-    {
-      type: 'rate_limit_event',
-      rate_limit_info: {
-        status: 'allowed_warning',
-        rateLimitType: 'five_hour',
-        utilization: 0.83,
-        resetsAt: 1_800_000_000,
+  const events = (
+    await collect([
+      { type: 'rate_limit_event', rate_limit_info: { status: 'allowed', utilization: 0.2 } },
+      { type: 'rate_limit_event', rate_limit_info: {} },
+      {
+        type: 'rate_limit_event',
+        rate_limit_info: {
+          status: 'allowed_warning',
+          rateLimitType: 'five_hour',
+          utilization: 0.83,
+          resetsAt: 1_800_000_000,
+        },
       },
-    },
-    {
-      type: 'rate_limit_event',
-      rate_limit_info: { status: 'rejected', rateLimitType: 'seven_day' },
-    },
-    { type: 'rate_limit', message: 'Retry after 30 seconds.' },
-  ])
+      {
+        type: 'rate_limit_event',
+        rate_limit_info: { status: 'rejected', rateLimitType: 'seven_day' },
+      },
+      { type: 'rate_limit', message: 'Retry after 30 seconds.' },
+    ])
+  ).filter((event) => event.type === 'notice')
   assert.equal(events.length, 3)
   assert.deepEqual(events[0], {
     type: 'notice',

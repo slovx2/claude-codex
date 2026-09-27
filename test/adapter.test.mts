@@ -104,7 +104,6 @@ test('server dispatch covers current Codex app-server client method surface', as
     'account/login/start',
     'account/login/cancel',
     'account/logout',
-    'account/rateLimits/read',
     'account/sendAddCreditsNudgeEmail',
     'feedback/upload',
     'command/exec',
