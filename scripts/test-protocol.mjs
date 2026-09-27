@@ -12,11 +12,11 @@ writeFileSync(
 )
 let schema =
   process.env.CODEX_SCHEMA_DIR ??
-  resolve('../tyrs-hand/protocol/codex-app-server/0.147.0/json-schema')
+  resolve('../tyrs-hand/protocol/codex-app-server/0.157.1/json-schema')
 if (!existsSync(schema)) {
   const cli = process.env.CODEX_TEST_BIN ?? 'codex'
   const version = execFileSync(cli, ['--version'], { encoding: 'utf8' }).trim()
-  if (version !== 'codex-cli 0.147.0') throw new Error(`测试 CLI 版本错误: ${version}`)
+  if (version !== 'codex-cli 0.157.1') throw new Error(`测试 CLI 版本错误: ${version}`)
   schema = resolve(artifacts, 'schema')
   execFileSync(cli, ['app-server', 'generate-json-schema', '--experimental', '--out', schema])
 }

@@ -3,7 +3,7 @@ import { basename, join, resolve } from 'node:path'
 import { Ajv, type ValidateFunction } from 'ajv'
 
 const root = resolve(
-  process.env.CODEX_SCHEMA_DIR ?? '../tyrs-hand/protocol/codex-app-server/0.147.0/json-schema',
+  process.env.CODEX_SCHEMA_DIR ?? '../tyrs-hand/protocol/codex-app-server/0.157.1/json-schema',
 )
 const ajv = new Ajv({ strict: false, allErrors: true, validateFormats: false })
 const validators = new Map<string, ValidateFunction>()
@@ -32,6 +32,16 @@ function loadContracts(): void {
         definitions.set(method, { schema, params: variant.properties.params, direction })
     }
   }
+  // 旧 Desktop 入口由适配层保留；响应仍严格采用当前 Thread 的原生 schema。
+  definitions.set('thread/rollback', {
+    schema: {},
+    params: {
+      type: 'object',
+      required: ['threadId', 'numTurns'],
+      properties: { threadId: { type: 'string' }, numTurns: { type: 'integer', minimum: 0 } },
+    },
+    direction: 'ClientRequest',
+  })
 }
 
 // 从固定 CLI 生成的 union 索引协议，未登记的方法不能静默绕过 schema 检查。
@@ -50,16 +60,18 @@ export function validatePayload(
       validator = ajv.compile({ ...contract.params, definitions: contract.schema.definitions })
     } else {
       const name =
-        method === 'account/rateLimits/read'
-          ? 'GetAccountRateLimitsResponse'
-          : method === 'config/mcpServer/reload'
-            ? 'McpServerRefreshResponse'
-            : method === 'config/value/write' || method === 'config/batchWrite'
-              ? 'ConfigWriteResponse'
-              : contract.params?.$ref
-                  ?.split('/')
-                  .at(-1)
-                  ?.replace(/Params$/, 'Response')
+        method === 'thread/rollback'
+          ? 'ThreadReadResponse'
+          : method === 'account/rateLimits/read'
+            ? 'GetAccountRateLimitsResponse'
+            : method === 'config/mcpServer/reload'
+              ? 'McpServerRefreshResponse'
+              : method === 'config/value/write' || method === 'config/batchWrite'
+                ? 'ConfigWriteResponse'
+                : contract.params?.$ref
+                    ?.split('/')
+                    .at(-1)
+                    ?.replace(/Params$/, 'Response')
       const file = files.get(name)
       if (!file) throw new Error(`缺少响应 schema: ${method} (${name})`)
       validator = ajv.compile(JSON.parse(readFileSync(file, 'utf8')))

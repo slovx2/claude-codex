@@ -4997,6 +4997,7 @@ export class CodexClaudeAppServer {
     return {
       id: thread.id,
       historyMode: this.store.threadSettings(thread.id).historyMode ?? 'legacy',
+      projectId: null,
       isPinned,
       section,
       sectionEnteredAt: thread.sectionEnteredAt ?? null,

@@ -17,7 +17,7 @@ function collectBuildInfo() {
   const cli = join(cliRoot, process.platform === 'win32' ? 'claude.exe' : 'claude')
   return {
     engine: 'claude-code',
-    protocolVersion: '0.147.0',
+    protocolVersion: '0.157.1',
     nodeVersion: process.versions.node,
     sdkVersion: sdk.version as string,
     cliBuild: execFileSync(cli, ['--version'], { encoding: 'utf8', timeout: 10_000 }).trim(),

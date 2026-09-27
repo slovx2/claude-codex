@@ -21,7 +21,7 @@ export interface ThreadGoal {
   updatedAt: number
 }
 
-// 0.147.0 的 goal/set 是部分更新：省略预算保持原值，显式 null 清除预算。
+// 0.157.1 的 goal/set 是部分更新：省略预算保持原值，显式 null 清除预算。
 export function patchThreadGoal(
   threadId: string,
   previous: ThreadGoal | null,

@@ -27,7 +27,7 @@ test('CAPABILITY-001：OpenAI 专属能力明确拒绝且不触发模型', { tim
     validatePayload('model/list', 'Response', catalog)
     assert.ok(catalog.data.length > 0)
     for (const option of catalog.data) {
-      // 手机参数面板依赖完整的 0.147.0 模型字段；Claude 不伪装 OpenAI 服务等级。
+      // 手机参数面板依赖完整的 0.157.1 模型字段；Claude 不伪装 OpenAI 服务等级。
       assert.deepEqual(option.serviceTiers, [])
       assert.equal(option.defaultServiceTier, null)
       assert.equal(option.modelSpecialty, null)

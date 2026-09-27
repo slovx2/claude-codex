@@ -8,7 +8,7 @@
 
 - Node `24.14.0`
 - Claude Agent SDK `0.3.282`，使用其随包 CLI，不接受宿主 Claude 替换。
-- Codex 协议及测试 CLI `0.147.0`
+- Codex 协议及测试 CLI `0.157.1`
 - `scripts/worker-runtime` 是 Worker 专用启动入口，`--runtime-info` 返回实际 Node、SDK、CLI 构建及 CLI SHA256。
 - Worker 必须提供独立 HOME、CLAUDE_CONFIG_DIR、CLAUDE_CODEX_HOME 和凭据环境；项目目录可以共享。
 - Linux 运行时必须安装可执行的 `bwrap` 和 `socat`，macOS 必须有 `/usr/bin/sandbox-exec`。启动探测发现缺失会明确失败；实际沙箱初始化失败时 SDK 仍拒绝执行，不降级权限。
@@ -21,7 +21,7 @@ npm test
 npm run test:protocol
 ```
 
-协议测试优先读取相邻主仓库固定 schema；独立 clone 可用 `CODEX_SCHEMA_DIR` 指定，或设置 `CODEX_TEST_BIN` 为精确 `0.147.0` CLI 自动生成。
+协议测试优先读取相邻主仓库固定 schema；独立 clone 可用 `CODEX_SCHEMA_DIR` 指定，或设置 `CODEX_TEST_BIN` 为精确 `0.157.1` CLI 自动生成。
 
 ## 已验证的实现
 

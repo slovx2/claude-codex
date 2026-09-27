@@ -17,7 +17,7 @@ jobs:
           node-version: 24.14.0
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - run: npm install --global @openai/codex@0.147.0 --no-audit --no-fund
+      - run: npm install --global @openai/codex@0.157.1 --no-audit --no-fund
       - run: codex app-server generate-json-schema --experimental --out .artifacts/schema
       - run: CODEX_REAL="$(command -v codex)" npm run check:rust-protocol-fixtures
       - run: npm run check       # biome format + lint
