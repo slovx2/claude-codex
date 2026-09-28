@@ -76,7 +76,7 @@ const result = spawnSync(
     'dist/test/native-event-deletion.test.mjs',
     'dist/test/native-turn-control.test.mjs',
     'dist/test/native-interactions.test.mjs',
-    'dist/test/native-interaction-timeout.test.mjs',
+    'dist/test/native-interaction-wait.test.mjs',
     'dist/test/native-plan.test.mjs',
     'dist/test/native-permission-policy.test.mjs',
     'dist/test/native-sandbox-policy.test.mjs',
@@ -91,6 +91,7 @@ const result = spawnSync(
     'dist/test/native-mcp-management.test.mjs',
     'dist/test/native-mcp-oauth.test.mjs',
     'dist/test/native-mcp-elicitation.test.mjs',
+    'dist/test/native-mcp-elicitation-wait.test.mjs',
     'dist/test/native-process.test.mjs',
   ],
   {

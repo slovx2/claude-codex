@@ -11,13 +11,6 @@ interface PendingInteraction {
 export class PendingInteractions {
   private pending = new Map<string, PendingInteraction>()
 
-  constructor(privateTimeoutMs = 120_000) {
-    if (!Number.isSafeInteger(privateTimeoutMs) || privateTimeoutMs < 1)
-      throw new Error('交互超时必须为正整数')
-    this.timeoutMs = privateTimeoutMs
-  }
-  private readonly timeoutMs: number
-
   request(
     peer: RpcPeer,
     method: string,
@@ -33,7 +26,6 @@ export class PendingInteractions {
     return new Promise((resolve, reject) => {
       const finish = (response?: JsonRpcResponse, error?: Error) => {
         if (!this.pending.delete(key)) return
-        clearTimeout(timer)
         signal?.removeEventListener('abort', cancelled)
         // 在唤醒等待者前发送结束事件，崩溃和取消也使用同一个完成路径。
         try {
@@ -50,10 +42,7 @@ export class PendingInteractions {
         else resolve(response?.result)
       }
       const cancelled = () => finish(undefined, new ProtocolError(-32010, '交互请求已取消'))
-      const timer = setTimeout(
-        () => finish(undefined, new ProtocolError(-32010, '交互请求超时，结果未确认')),
-        this.timeoutMs,
-      )
+      // 人工交互持续等待，直到回答、取消、断线或运行时停止。
       this.pending.set(key, { peerId: peer.id, threadId, finish })
       signal?.addEventListener('abort', cancelled, { once: true })
       try {

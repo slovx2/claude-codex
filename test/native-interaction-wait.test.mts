@@ -9,8 +9,8 @@ import { ProtocolClient } from './fixtures/protocol-client.mjs'
 
 type InputTool = 'AskUserQuestion' | 'ExitPlanMode'
 
-async function verifyNaturalTimeout(toolName: InputTool): Promise<void> {
-  const home = await mkdtemp(join(tmpdir(), 'native-input-timeout-'))
+async function verifyLongWait(toolName: InputTool): Promise<void> {
+  const home = await mkdtemp(join(tmpdir(), 'native-input-wait-'))
   const target = join(home, 'must-not-write.txt')
   const model = new MockLLM()
   const client = await ProtocolClient.start(home, await model.start())
@@ -22,7 +22,7 @@ async function verifyNaturalTimeout(toolName: InputTool): Promise<void> {
     answered = resolve
   })
   let requestedAt = 0
-  const inputID = 'toolu_natural_input_timeout'
+  const inputID = 'toolu_delayed_input'
   try {
     client.onServerRequest = async (method, params) => {
       assert.equal(method, 'item/tool/requestUserInput')
@@ -32,7 +32,7 @@ async function verifyNaturalTimeout(toolName: InputTool): Promise<void> {
       return {
         answers: {
           [params.questions[0].id]: {
-            answers: [toolName === 'ExitPlanMode' ? '执行计划' : 'LATE_TIMEOUT_ANSWER'],
+            answers: [toolName === 'ExitPlanMode' ? '继续规划' : 'DELAYED_USER_ANSWER'],
           },
         },
       }
@@ -41,7 +41,7 @@ async function verifyNaturalTimeout(toolName: InputTool): Promise<void> {
       model.enqueue(() => [
         {
           type: 'tool_use',
-          id: 'toolu_enter_timeout_plan',
+          id: 'toolu_enter_wait_plan',
           name: 'EnterPlanMode',
           input: {},
         },
@@ -73,19 +73,20 @@ async function verifyNaturalTimeout(toolName: InputTool): Promise<void> {
       const results = request.messages
         .flatMap((message: any) => (Array.isArray(message.content) ? message.content : []))
         .filter((block: any) => block.type === 'tool_result' && block.tool_use_id === inputID)
-      assert.equal(results.length, 1, '真实 CLI 必须收到唯一超时工具结果')
-      assert.equal(results[0].is_error, true, '没有用户答案时不得假成功')
-      assert.doesNotMatch(JSON.stringify(request.messages), /LATE_TIMEOUT_ANSWER/)
+      assert.equal(results.length, 1, '真实 CLI 必须收到唯一用户确认结果')
+      assert.equal(results[0].is_error === true, toolName === 'ExitPlanMode')
+      if (toolName === 'AskUserQuestion')
+        assert.match(JSON.stringify(results[0]), /DELAYED_USER_ANSWER/)
       if (toolName === 'ExitPlanMode')
         return [
           {
             type: 'tool_use',
-            id: 'toolu_after_timeout_write',
+            id: 'toolu_after_decline_write',
             name: 'Write',
             input: { file_path: target, content: '禁止未确认计划产生副作用' },
           },
         ]
-      return [{ type: 'text', text: 'NATURAL_TIMEOUT_HANDLED' }]
+      return [{ type: 'text', text: 'DELAYED_ANSWER_HANDLED' }]
     })
     if (toolName === 'ExitPlanMode')
       model.enqueue((request) => {
@@ -93,11 +94,11 @@ async function verifyNaturalTimeout(toolName: InputTool): Promise<void> {
           .flatMap((message: any) => (Array.isArray(message.content) ? message.content : []))
           .filter(
             (block: any) =>
-              block.type === 'tool_result' && block.tool_use_id === 'toolu_after_timeout_write',
+              block.type === 'tool_result' && block.tool_use_id === 'toolu_after_decline_write',
           )
         assert.equal(results.length, 1)
-        assert.equal(results[0].is_error, true, '退出确认超时后真实 Write 必须继续被计划权限拒绝')
-        return [{ type: 'text', text: 'PLAN_TIMEOUT_HANDLED' }]
+        assert.equal(results[0].is_error, true, '长等待后拒绝退出计划，真实 Write 仍被计划权限拒绝')
+        return [{ type: 'text', text: 'PLAN_DECLINE_HANDLED' }]
       })
     const { thread } = await client.request('thread/start', {
       cwd: home,
@@ -108,24 +109,24 @@ async function verifyNaturalTimeout(toolName: InputTool): Promise<void> {
       threadId: thread.id,
       input: [{ type: 'text', text: '等待真实用户回答，不得猜测或自动确认' }],
     })
-    // 正式 PendingInteractions 的默认期限为120秒；不得缩短timer替代这条验收。
-    const deadline = Date.now() + 160_000
-    let terminal: any
-    while (Date.now() < deadline) {
-      terminal = client.trace.find(
-        (event) => event.method === 'turn/completed' && event.params.turn.id === turn.id,
-      )
-      if (terminal) break
-      await new Promise((resolve) => setTimeout(resolve, 25))
-    }
-    assert.ok(terminal, '自然超时后必须有回合终态')
+    await client.notification('item/tool/requestUserInput')
+    // 真正跨过原120秒边界；此处仅为测试等待，不改变产品时钟或计时参数。
+    await new Promise((resolve) => setTimeout(resolve, 125_000))
     const elapsedMs = Date.now() - requestedAt
-    assert.ok(requestedAt > 0 && elapsedMs >= 119_500, '必须真正经过默认120秒等待')
-    assert.ok(elapsedMs < 150_000, '超时之后必须有界完成')
-    assert.equal((await client.completed(turn.id)).status, 'completed')
+    assert.ok(requestedAt > 0 && elapsedMs >= 125_000)
+    assert.equal(client.trace.filter((event) => event.method === 'turn/completed').length, 0)
+    assert.equal(
+      client.trace.filter((event) => event.method === 'serverRequest/resolved').length,
+      0,
+    )
+    assert.equal(model.requests.length, toolName === 'ExitPlanMode' ? 2 : 1)
+    await assert.rejects(access(target), { code: 'ENOENT' })
     release()
     await replied
-    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.equal((await client.completed(turn.id)).status, 'completed')
+    const terminal = client.trace.find(
+      (event) => event.method === 'turn/completed' && event.params.turn.id === turn.id,
+    )
     const history = await client.request('thread/read', { threadId: thread.id, includeTurns: true })
     const stored = history.thread.turns[0]
     const input = stored.items.find(
@@ -141,7 +142,7 @@ async function verifyNaturalTimeout(toolName: InputTool): Promise<void> {
     const ends = client.trace.filter(
       (event) => event.method === 'item/completed' && event.params.turnId === turn.id,
     )
-    await saveArtifact('natural-input-timeout', {
+    await saveArtifact('native-input-long-wait', {
       toolName,
       elapsedMs,
       threadId: thread.id,
@@ -160,9 +161,9 @@ async function verifyNaturalTimeout(toolName: InputTool): Promise<void> {
       completedIDs: ends.map((event) => event.params.item.id),
     })
     assert.equal(history.thread.status.type, 'idle')
-    assert.equal(input.status, 'failed', '自然超时不能留下进行中的提问条目')
-    assert.equal(input.success, false)
-    assert.match(JSON.stringify(input.contentItems), /超时/)
+    assert.equal(input.status, 'completed', '明确回答后提问条目必须完成')
+    assert.equal(input.success, true)
+    assert.doesNotMatch(JSON.stringify(input.contentItems), /超时/)
     assert.ok(stored.items.every((item: any) => item.status !== 'inProgress'))
     assert.equal(resolved.length, 1)
     const terminalIndex = client.trace.indexOf(terminal)
@@ -187,7 +188,7 @@ async function verifyNaturalTimeout(toolName: InputTool): Promise<void> {
     assert.equal(
       model.requests.length,
       toolName === 'ExitPlanMode' ? 4 : 2,
-      '迟到回答不能唤醒模型或执行工具',
+      '明确回答后模型只能继续一次',
     )
     if (toolName === 'ExitPlanMode') {
       await client.request('thread/resume', { threadId: thread.id })
@@ -205,16 +206,16 @@ async function verifyNaturalTimeout(toolName: InputTool): Promise<void> {
   }
 }
 
-test('APPROVAL-007 / EVENTS-006：真实提问与退出计划自然超时，迟到回答不执行且事件历史闭合', {
-  timeout: 180_000,
+test('APPROVAL-007 / EVENTS-006：真实提问与退出计划等待超过120秒仍可回答，权限与事件历史正确', {
+  timeout: 210_000,
 }, async () => {
-  // 两个独立 HOME/模型/适配器并发等待，既保留真实期限也避免串行叠加四分钟。
+  // 独立 HOME/模型/适配器并发验证，避免串行叠加等待时间。
   const results = await Promise.allSettled([
-    verifyNaturalTimeout('AskUserQuestion'),
-    verifyNaturalTimeout('ExitPlanMode'),
+    verifyLongWait('AskUserQuestion'),
+    verifyLongWait('ExitPlanMode'),
   ])
   const failures = results.flatMap((result) =>
     result.status === 'rejected' ? [result.reason] : [],
   )
-  if (failures.length) throw new AggregateError(failures, '真实交互自然超时验收失败')
+  if (failures.length) throw new AggregateError(failures, '真实交互长等待验收失败')
 })

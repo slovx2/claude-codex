@@ -16,7 +16,7 @@ function peer(id: string): RpcPeer & { messages: WireMessage[] } {
 }
 
 test('MCP 请求级取消只结束指定交互，迟到回答无效', async () => {
-  const pending = new PendingInteractions(1000)
+  const pending = new PendingInteractions()
   const owner = peer('owner')
   const abort = new AbortController()
   const cancelled = assert.rejects(
@@ -51,7 +51,7 @@ test('MCP 请求级取消只结束指定交互，迟到回答无效', async () =
 })
 
 test('APPROVAL-001：相同请求 ID 不能由另一个连接回答，首次回答生效', async () => {
-  const pending = new PendingInteractions(1000)
+  const pending = new PendingInteractions()
   const owner = peer('owner')
   const other = peer('other')
   const result = pending.request(owner, 'item/tool/call', 'same-id', { threadId: 'thread' })
@@ -61,13 +61,37 @@ test('APPROVAL-001：相同请求 ID 不能由另一个连接回答，首次回�
   assert.equal(await result, 'first')
 })
 
-test('APPROVAL-002：超时、断线、中断与关闭使旧请求失效', async () => {
-  const pending = new PendingInteractions(10)
+test('人工交互等待超过两分钟或一天仍可回答，且只完成一次', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  for (const elapsedMs of [120_001, 86_400_000]) {
+    const pending = new PendingInteractions()
+    const owner = peer('owner')
+    const abort = new AbortController()
+    let finished = 0
+    const result = pending.request(
+      owner,
+      'item/tool/call',
+      'waiting',
+      { threadId: 'thread' },
+      abort.signal,
+      () => {
+        finished++
+      },
+    )
+    t.mock.timers.tick(elapsedMs)
+    assert.equal(finished, 0)
+    pending.resolve(owner, { jsonrpc: '2.0', id: 'waiting', result: 'confirmed' })
+    assert.equal(await result, 'confirmed')
+    abort.abort()
+    pending.close()
+    pending.resolve(owner, { jsonrpc: '2.0', id: 'waiting', result: 'duplicate' })
+    assert.equal(finished, 1)
+  }
+})
+
+test('APPROVAL-002：断线、中断与关闭使旧请求失效', async () => {
+  const pending = new PendingInteractions()
   const owner = peer('owner')
-  await assert.rejects(
-    pending.request(owner, 'item/tool/call', 'timeout', { threadId: 'a' }),
-    /超时/,
-  )
   const disconnect = pending.request(owner, 'item/tool/call', 'disconnect', { threadId: 'a' })
   const disconnected = assert.rejects(disconnect, /连接已关闭/)
   pending.cancelPeer(owner.id)

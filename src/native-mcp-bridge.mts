@@ -1,5 +1,5 @@
 import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
@@ -18,6 +18,7 @@ import {
 import { sdkMcpServers, sdkMcpStartupEnvironment } from './mcp-config.mjs'
 import { mcpOAuthManager } from './mcp-oauth.mjs'
 import { OAuthLoginRequired } from './mcp-oauth-provider.mjs'
+import { NativeMcpClient } from './native-mcp-client.mjs'
 import type { RuntimeHandlers } from './types.mjs'
 
 // 连接仍进入真实 SDK 的 MCP 工具执行链；交互直接回到 Hub，避免 CLI 丢弃 URL 和元数据。
@@ -37,7 +38,7 @@ export class NativeMcpBridge {
     const timeout = Number(sdkMcpStartupEnvironment(raw).MCP_TIMEOUT ?? 30_000)
     for (const [name, config] of Object.entries(sdkMcpServers(raw))) {
       signal.throwIfAborted()
-      const client = new Client(
+      const client = new NativeMcpClient(
         { name: 'claude-codex-adapter', version: '0.1.0' },
         {
           capabilities: { elicitation: { form: {}, url: {} } },
@@ -75,7 +76,7 @@ export class NativeMcpBridge {
       })
       const options = (requestSignal: AbortSignal) => ({
         signal: AbortSignal.any([signal, requestSignal]),
-        timeout: config.timeout ?? 120_000,
+        ...(config.timeout === undefined ? {} : { timeout: config.timeout }),
       })
       instance.server.setRequestHandler(ListToolsRequestSchema, async (request, extra) => {
         if (!capabilities.tools) return { tools: [] }

@@ -18,7 +18,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
   ],
 }))
-server.setRequestHandler(CallToolRequestSchema, async () => {
+server.setRequestHandler(CallToolRequestSchema, async (_request, extra) => {
   const request =
     process.env.FIXTURE_ELICITATION_MODE === 'url'
       ? {
@@ -36,7 +36,8 @@ server.setRequestHandler(CallToolRequestSchema, async () => {
             required: ['value'],
           },
         }
-  const response = await server.elicitInput(request)
+  // 夹具自身的等待预算长于三分钟验收；不能让第三方 SDK 默认60秒掩盖产品结果。
+  const response = await server.elicitInput(request, { timeout: 300_000, signal: extra.signal })
   if (response.action === 'accept') {
     const value = request.mode === 'url' ? 'URL_CONFIRMED' : response.content.value
     await appendFile(process.env.FIXTURE_EFFECT_PATH, String(value) + '\n')

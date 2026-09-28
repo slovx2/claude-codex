@@ -56,6 +56,15 @@ diffs. Runtime selection maps only to existing backend paths today: default
 in-process Claude Agent SDK, `agent-http`, `agentapi`, `claude-p`, `codex-proxy`,
 and `mock`.
 
+### 人工交互等待
+
+适配器不为提问、审批、计划确认和 MCP 表单设置默认人工回答时限。
+交互只在收到回答、用户取消、连接断开、回合中断或运行时停止时结束。
+原有两处默认 120 秒计时器已移除；MCP 工具调用仍保留结果校验和取消通知。
+连接建立与管理请求的超时、用户显式配置的 `tool_timeout_sec` 继续生效。
+外部 MCP 服务和原生 Claude CLI/SDK 可以有自己的工具执行上限；本适配器不修改它们，
+也不通过设置超大 timeout 冒充关闭计时器。
+
 ### Desktop conversation and visual explanations
 
 The native Claude Agent SDK backend receives presentation guidance modeled on
