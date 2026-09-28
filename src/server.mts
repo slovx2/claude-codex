@@ -475,6 +475,24 @@ export class CodexClaudeAppServer {
         'feedback/upload',
         'attestation/generate',
         'environment/add',
+        // OpenAI/Codex 专属：Bedrock 与 Gateway 认证、ChatGPT 连接器详情、Codex 记忆与 rollout、
+        // 插件对账、Touch ID 用户验证及外部代理配置导入。Claude 不伪造成功。
+        'account/bedrock/discover',
+        'account/bedrock/setup',
+        'account/gatewayOAuth/login',
+        'account/gatewayOAuth/cancel',
+        'account/gatewayOAuth/read',
+        'app/installed',
+        'app/read',
+        'memory/status',
+        'plugin/reconcile',
+        'rollout/compress',
+        'userVerification/status',
+        'userVerification/enroll',
+        'userVerification/delete',
+        'userVerification/verify',
+        'userVerification/cancel',
+        'externalAgentConfig/import',
       ].includes(method)
     )
       throw new ProtocolError(-32004, `Claude 运行时不适用此能力: ${method}`)
@@ -857,8 +875,6 @@ export class CodexClaudeAppServer {
         return this.processes.followup(peer, 'process', 'resize', asRecord(params))
       case 'externalAgentConfig/detect':
         return { items: [] }
-      case 'externalAgentConfig/import':
-        return {}
       case 'config/value/write':
       case 'config/batchWrite':
         return this.configWriteResponse(asRecord(params), method === 'config/batchWrite')

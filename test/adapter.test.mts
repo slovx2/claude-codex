@@ -116,7 +116,6 @@ test('server dispatch covers current Codex app-server client method surface', as
     'process/resizePty',
     'config/read',
     'externalAgentConfig/detect',
-    'externalAgentConfig/import',
     'config/value/write',
     'config/batchWrite',
     'configRequirements/read',
