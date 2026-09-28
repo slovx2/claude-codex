@@ -120,6 +120,11 @@ codex.
 
 ## Robustness notes
 
+- `turn/settings/update` 通过 SDK 的 `applyFlagSettings` 实际更新当前回合的模型和 effort，
+  不写用户配置或未来回合的线程设置；启动边界等待原生CLI就绪，错配或已结束目标返回
+  `targetUnavailable`。TURNSETTINGS-001/002 验证实际模型HTTP参数、其他会话隔离和重启后的默认值。
+  按用户的主流程兼容要求，附带的 `summary`、`serviceTier` 偏好在Claude没有对应语义时忽略，
+  不阻断有效模型切换；非法模型/effort、未知字段或非用户审批角色仍拒绝，整批参数校验后才发布。
 - 项目 CRUD、导入、重排与线程归属保存到 SQLite，创建和导入使用唯一幂等键。
   导入失败整体回滚；项目删除只解除归属，保留会话历史和源文件。
   `project/list` 支持位置与最近活动时间双向分页，空项目始终排在最后；

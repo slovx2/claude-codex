@@ -77,6 +77,7 @@ const result = spawnSync(
     'dist/test/native-events.test.mjs',
     'dist/test/native-event-deletion.test.mjs',
     'dist/test/native-turn-control.test.mjs',
+    'dist/test/native-turn-settings.test.mjs',
     'dist/test/native-interactions.test.mjs',
     'dist/test/native-interaction-wait.test.mjs',
     'dist/test/native-approval-lifecycle.test.mjs',

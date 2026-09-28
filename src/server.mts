@@ -117,6 +117,7 @@ import { PINNED_SECTION_ID, type SessionStore } from './store.mjs'
 import { threadAttachmentRequest } from './thread-attachments.mjs'
 import type { ThreadGoal } from './thread-goals.mjs'
 import { patchGitInfo } from './thread-metadata.mjs'
+import { parseTurnSettings } from './turn-settings.mjs'
 import type {
   ClaudeRuntime,
   FileUpdateChange,
@@ -651,6 +652,8 @@ export class CodexClaudeAppServer {
         return this.turnStart(peer, asRecord(params))
       case 'turn/steer':
         return this.turnSteer(peer, asRecord(params))
+      case 'turn/settings/update':
+        return this.turnSettingsUpdate(asRecord(params))
       case 'turn/interrupt':
         return this.turnInterrupt(peer, asRecord(params))
       // Realtime voice is unsupported: Claude Code has no realtime audio
@@ -4249,6 +4252,23 @@ export class CodexClaudeAppServer {
     this.clearActiveTurn(threadId)
     this.setThreadStatus(peer, threadId, { type: 'idle' })
     return {}
+  }
+
+  private async turnSettingsUpdate(params: Record<string, unknown>): Promise<unknown> {
+    const threadId = requiredString(params.threadId, 'threadId')
+    const turnId = requiredString(params.turnId, 'turnId')
+    const settings = parseTurnSettings(params)
+    const active = (): boolean =>
+      this.activeTurnByThread.get(threadId) === turnId &&
+      this.store.getTurn(turnId)?.status === 'inProgress'
+    if (!active()) return { status: 'targetUnavailable' }
+    const startup = this.runtimeReadyByTurn.get(turnId)
+    if (startup && !(await startup.ready)) return { status: 'targetUnavailable' }
+    if (!active()) return { status: 'targetUnavailable' }
+    if (!this.runtime.updateTurnSettings)
+      throw new ProtocolError(-32004, '当前运行时不支持真实回合设置更新')
+    const applied = await this.runtime.updateTurnSettings(threadId, turnId, settings)
+    return { status: applied ? 'applied' : 'targetUnavailable' }
   }
 
   private async turnSteer(_peer: RpcPeer, params: Record<string, unknown>): Promise<unknown> {

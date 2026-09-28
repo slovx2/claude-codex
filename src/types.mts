@@ -477,6 +477,11 @@ export interface RuntimeHandlers {
 }
 
 export interface ClaudeRuntime {
+  updateTurnSettings?(
+    threadId: string,
+    turnId: string,
+    settings: import('./turn-settings.mjs').RuntimeTurnSettings,
+  ): Promise<boolean>
   appendContext?(
     context: import('./native-context.mjs').ContextInjection,
   ): Promise<{ boundary: string }>

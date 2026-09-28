@@ -64,6 +64,7 @@ import {
   runtimePermissionOptions,
   sandboxedBashInput,
 } from './runtime-permissions.mjs'
+import type { RuntimeTurnSettings } from './turn-settings.mjs'
 import type {
   ClaudeRuntime,
   PermissionDecision,
@@ -153,6 +154,10 @@ const WORKFLOW_JOURNAL_SETTLE_TIMEOUT_MS = 3_000
 export class NativeClaudeRuntime implements ClaudeRuntime {
   private sdk: ClaudeSdk | null = null
   private turns = new Map<string, PendingTurn>()
+  private turnSettingsReady = new Map<
+    string,
+    { threadId: string; ready: Promise<PendingTurn | null> }
+  >()
   private inputs = new Map<string, NativeTurnInput>()
   private permissions = new Map<string, PendingPermission>()
   private aborts = new Map<string, AbortController>()
@@ -175,6 +180,13 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     this.processes.set(context.threadId, nativeProcess)
     this.inputs.set(context.threadId, input)
     this.aborts.set(context.threadId, abort)
+    let settingsReady!: (pending: PendingTurn | null) => void
+    this.turnSettingsReady.set(context.turnId, {
+      threadId: context.threadId,
+      ready: new Promise((resolve) => {
+        settingsReady = resolve
+      }),
+    })
     try {
       if (
         context.permissionTools &&
@@ -293,6 +305,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
           workflowFailure: null,
         }
         this.turns.set(context.turnId, pending)
+        settingsReady(pending)
         // Kick off the receive loop in the background. We don't await it here
         // because runTurn() must resolve when the result message arrives — the
         // receive loop will call resolve/reject on `pending` once the SDK ends.
@@ -305,6 +318,8 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         })
       })
     } finally {
+      settingsReady(null)
+      this.turnSettingsReady.delete(context.turnId)
       input.close()
       if (this.inputs.get(context.threadId) === input) this.inputs.delete(context.threadId)
       if (this.aborts.get(context.threadId) === abort) this.aborts.delete(context.threadId)
@@ -360,6 +375,20 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         cleaned()
       }
     }
+  }
+
+  async updateTurnSettings(
+    threadId: string,
+    turnId: string,
+    settings: RuntimeTurnSettings,
+  ): Promise<boolean> {
+    const startup = this.turnSettingsReady.get(turnId)
+    if (!startup || startup.threadId !== threadId) return false
+    const pending = await startup.ready
+    if (!pending || pending.resolved || pending.abort.signal.aborted) return false
+    // CLI的flag层只属于当前进程；不写settings文件或未来回合的线程设置。
+    if (Object.keys(settings).length) await pending.query.applyFlagSettings(settings)
+    return true
   }
 
   async forkSession(sessionId: string, cwd: string, upToMessageId?: string): Promise<string> {

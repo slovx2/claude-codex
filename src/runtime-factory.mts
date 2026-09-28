@@ -9,6 +9,7 @@ import {
   type RuntimeConfig,
   resolveRuntimeConfig,
 } from './runtime-config.mjs'
+import type { RuntimeTurnSettings } from './turn-settings.mjs'
 import type { ClaudeRuntime, RuntimeHandlers, RuntimeTurnContext } from './types.mjs'
 import { debugLog } from './util.mjs'
 
@@ -84,6 +85,18 @@ class SelectableRuntime implements ClaudeRuntime {
       if (this.activeRuntimeByThread.get(context.threadId) === runtime)
         this.activeRuntimeByThread.delete(context.threadId)
     }
+  }
+
+  async updateTurnSettings(
+    threadId: string,
+    turnId: string,
+    settings: RuntimeTurnSettings,
+  ): Promise<boolean> {
+    const runtime = this.activeRuntimeByThread.get(threadId)
+    if (!runtime) return false
+    if (!runtime.updateTurnSettings)
+      throw new ProtocolError(-32004, '当前运行时不支持真实回合设置更新')
+    return runtime.updateTurnSettings(threadId, turnId, settings)
   }
 
   async steer(threadId: string, prompt: string): Promise<void> {
