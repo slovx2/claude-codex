@@ -35,6 +35,7 @@ import {
   permissionToolName,
 } from './permission-grants.mjs'
 import { ProcessRpc } from './process-rpc.mjs'
+import { projectRequest } from './project-rpc.mjs'
 import {
   ProtocolError,
   pageRecords,
@@ -516,6 +517,28 @@ export class CodexClaudeAppServer {
       }
       case 'thread/start':
         return this.threadStart(peer, asRecord(params))
+      case 'project/create':
+      case 'project/import':
+      case 'project/list':
+      case 'project/read':
+      case 'project/update':
+      case 'project/move':
+      case 'project/delete':
+        return projectRequest(
+          this.store.projects,
+          method,
+          asRecord(params),
+          (projectId, changeType) => {
+            setImmediate(() => {
+              for (const target of this.accountPeers)
+                this.notify(target, {
+                  method: 'project/changed',
+                  params: { projectId, changeType },
+                })
+            })
+          },
+          (threadId, projectId) => this.threadProjectUpdated(threadId, projectId),
+        )
       case 'thread/resume':
         return this.threadResume(peer, asRecord(params))
       case 'thread/fork':
@@ -812,6 +835,9 @@ export class CodexClaudeAppServer {
 
   private threadStart(peer: RpcPeer, params: Record<string, unknown>): unknown {
     this.loadPersistedConfig()
+    const projectId =
+      params.projectId == null ? null : requiredString(params.projectId, 'projectId')
+    if (projectId !== null) this.store.projects.read(projectId)
     const id = newId()
     const now = nowSeconds()
     const requestedCwd = stringOr(params.cwd, process.cwd())
@@ -886,6 +912,7 @@ export class CodexClaudeAppServer {
       codexSessionId: null,
     }
     this.store.upsertThread(thread)
+    if (projectId !== null) this.store.projects.assignThread(id, projectId)
     // 保存创建时实际策略，后续全局默认变化不能扩大已有会话的授权。
     const settings = this.store.threadSettings(id)
     settings.sandboxPolicy = this.configSandboxPolicy(thread.sandboxMode, cwd)
@@ -1064,6 +1091,8 @@ export class CodexClaudeAppServer {
     }
     this.store.upsertThread(thread)
     this.store.saveThreadSettings(id, this.store.threadSettings(parentId))
+    const parentProject = this.store.projects.projectId(parentId)
+    if (parentProject !== null) this.store.projects.assignThread(id, parentProject)
     const parentGoal = this.store.threadGoal(parentId)
     if (parentGoal && parentGoal.status !== 'active')
       this.store.saveThreadGoal({ ...parentGoal, threadId: id })
@@ -1128,6 +1157,12 @@ export class CodexClaudeAppServer {
       : []
     const filters = {
       archived: (params.archived as boolean | null | undefined) ?? null,
+      projectId:
+        params.projectId === undefined
+          ? undefined
+          : params.projectId === null
+            ? null
+            : requiredString(params.projectId, 'projectId'),
       isPinned,
       sectionId,
       cwd:
@@ -1546,6 +1581,13 @@ export class CodexClaudeAppServer {
     const threadId = requiredString(params.threadId, 'threadId')
     const thread = this.store.getThread(threadId)
     if (!thread) throw new ProtocolError(-32602, '未知会话')
+    const projectId =
+      params.projectId == null
+        ? undefined
+        : params.projectId === ''
+          ? null
+          : requiredString(params.projectId, 'projectId')
+    if (projectId != null) this.store.projects.read(projectId)
     const settings = this.store.threadSettings(threadId)
     const gitInfo = patchGitInfo(settings.gitInfo, params.gitInfo)
 
@@ -1598,7 +1640,18 @@ export class CodexClaudeAppServer {
     }
     this.saveRuntimeSettings(threadId, params)
 
+    if (projectId !== undefined && this.store.projects.assignThread(threadId, projectId))
+      this.threadProjectUpdated(threadId, projectId)
     return this.threadEnvelope(thread, this.store.listTurns(threadId))
+  }
+
+  private threadProjectUpdated(threadId: string, projectId: string | null): void {
+    setImmediate(() =>
+      this.notifyThread(threadId, {
+        method: 'thread/project/updated',
+        params: { threadId, projectId },
+      }),
+    )
   }
 
   private threadSettingsUpdate(peer: RpcPeer, params: Record<string, unknown>): unknown {
@@ -5010,7 +5063,7 @@ export class CodexClaudeAppServer {
     return {
       id: thread.id,
       historyMode: this.store.threadSettings(thread.id).historyMode ?? 'legacy',
-      projectId: null,
+      projectId: this.store.projects.projectId(thread.id),
       isPinned,
       section,
       sectionEnteredAt: thread.sectionEnteredAt ?? null,

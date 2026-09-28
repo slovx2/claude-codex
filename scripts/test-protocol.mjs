@@ -56,6 +56,7 @@ const result = spawnSync(
     'dist/test/native-protocol.test.mjs',
     'dist/test/native-catalog.test.mjs',
     'dist/test/native-attachments.test.mjs',
+    'dist/test/native-projects.test.mjs',
     'dist/test/native-experimental-features.test.mjs',
     'dist/test/native-thread-shell.test.mjs',
     'dist/test/native-context-injection.test.mjs',

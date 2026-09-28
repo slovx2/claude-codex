@@ -6,6 +6,7 @@ import type { CatalogCursor } from './catalog-pagination.mjs'
 import { emptyGoalLedger, type GoalLedger, type GoalState } from './goal-controller.mjs'
 import { type HookEvent, type HookRun, hookItem } from './hook-lifecycle.mjs'
 import type { ContextInjection } from './native-context.mjs'
+import { ProjectStore } from './project-store.mjs'
 import { ProtocolError, type ThreadRuntimeSettings } from './protocol-contract.mjs'
 import type { ThreadAttachment } from './thread-attachments.mjs'
 import type { ThreadGoal } from './thread-goals.mjs'
@@ -36,11 +37,13 @@ function openDatabase(path: string): DatabaseSync {
 
 export class SessionStore {
   private db: DatabaseSync
+  readonly projects: ProjectStore
 
   constructor(path = join(adapterHome(), 'state.sqlite')) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
     this.db = openDatabase(path)
     this.migrate()
+    this.projects = new ProjectStore(this.db)
   }
 
   private migrate(): void {
@@ -394,6 +397,7 @@ export class SessionStore {
       ancestorThreadId?: string | null
       sourceKinds?: string[]
       sectionId?: string | null | undefined
+      projectId?: string | null | undefined
       sortKey?: 'created_at' | 'updated_at' | 'recency_at' | 'section_position'
       sortDirection?: 'asc' | 'desc'
     } = {},
@@ -439,6 +443,13 @@ export class SessionStore {
         where.push('t.section_id = ?')
         args.push(options.sectionId)
       }
+    }
+    if (options.projectId !== undefined) {
+      const membership = `SELECT thread_id FROM project_threads
+        ${options.projectId === null ? '' : 'WHERE project_id=?'} UNION ALL
+        SELECT thread_id FROM live_project_threads ${options.projectId === null ? '' : 'WHERE project_id=?'}`
+      where.push(`t.id ${options.projectId === null ? 'NOT IN' : 'IN'} (${membership})`)
+      if (options.projectId !== null) args.push(options.projectId, options.projectId)
     }
     const parentThreadId = options.parentThreadId ?? null
     const ancestorThreadId = options.ancestorThreadId ?? null
@@ -982,6 +993,8 @@ export class SessionStore {
         'goal_ledgers',
         'thread_usage',
         'thread_attachments',
+        'project_threads',
+        'live_project_threads',
       ])
         this.db.prepare(`DELETE FROM ${table} WHERE thread_id=?`).run(threadId)
       this.db.prepare('DELETE FROM threads WHERE id=?').run(threadId)

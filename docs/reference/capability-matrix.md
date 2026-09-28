@@ -120,6 +120,13 @@ codex.
 
 ## Robustness notes
 
+- 项目 CRUD、导入、重排与线程归属保存到 SQLite，创建和导入使用唯一幂等键。
+  导入失败整体回滚；项目删除只解除归属，保留会话历史和源文件。
+  `project/list` 支持位置与最近活动时间双向分页，空项目始终排在最后；
+  `thread/list` 支持按项目或未归属筛选，游标绑定查询范围。
+  fork 继承项目，临时会话归属不跨进程保存；归档会话不计入项目最近活动时间。
+  PROJECT-002/003 使用真实 SDK/CLI 回合、重启及 SQLite 写入失败验证这些语义，
+  并验证 `project/changed` 与 `thread/project/updated` 真实通知。
 - 附件元数据由 `thread/attachment/add|list|remove` 真实持久化到 SQLite，
   `(threadId, attachmentType, identityKey)` 唯一；重复添加返回原内容，不覆盖 payload。
   仅创建和实际删除推送 `thread/attachment/updated`，分页游标绑定所属会话。

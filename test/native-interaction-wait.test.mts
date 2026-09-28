@@ -22,11 +22,15 @@ async function verifyLongWait(toolName: InputTool): Promise<void> {
     answered = resolve
   })
   let requestedAt = 0
+  let requestedAtMonotonic = 0
+  const requestTimes: Array<{ wall: number; monotonic: number }> = []
   const inputID = 'toolu_delayed_input'
   try {
     client.onServerRequest = async (method, params) => {
       assert.equal(method, 'item/tool/requestUserInput')
       requestedAt = Date.now()
+      requestedAtMonotonic = performance.now()
+      requestTimes.push({ wall: requestedAt, monotonic: requestedAtMonotonic })
       await held
       answered()
       return {
@@ -113,7 +117,16 @@ async function verifyLongWait(toolName: InputTool): Promise<void> {
     // 真正跨过原120秒边界；此处仅为测试等待，不改变产品时钟或计时参数。
     await new Promise((resolve) => setTimeout(resolve, 125_000))
     const elapsedMs = Date.now() - requestedAt
-    assert.ok(requestedAt > 0 && elapsedMs >= 125_000)
+    const timing = {
+      toolName,
+      requestedAt,
+      elapsedMs,
+      monotonicElapsedMs: performance.now() - requestedAtMonotonic,
+      requestTimes,
+      modelRequests: model.requests.length,
+    }
+    await saveArtifact('native-input-wait-clock', timing)
+    assert.ok(requestedAt > 0 && elapsedMs >= 125_000, JSON.stringify(timing))
     assert.equal(client.trace.filter((event) => event.method === 'turn/completed').length, 0)
     assert.equal(
       client.trace.filter((event) => event.method === 'serverRequest/resolved').length,
