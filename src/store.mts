@@ -7,8 +7,10 @@ import { emptyGoalLedger, type GoalLedger, type GoalState } from './goal-control
 import { type HookEvent, type HookRun, hookItem } from './hook-lifecycle.mjs'
 import type { ContextInjection } from './native-context.mjs'
 import { ProtocolError, type ThreadRuntimeSettings } from './protocol-contract.mjs'
+import type { ThreadAttachment } from './thread-attachments.mjs'
 import type { ThreadGoal } from './thread-goals.mjs'
 import type {
+  JsonValue,
   ThreadItem,
   ThreadRecord,
   ThreadSectionAppearance,
@@ -72,6 +74,13 @@ export class SessionStore {
       CREATE TABLE IF NOT EXISTS thread_usage (
         thread_id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, usage_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS thread_attachments (
+        id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, attachment_type TEXT NOT NULL,
+        identity_key TEXT NOT NULL, payload_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+        UNIQUE(thread_id, attachment_type, identity_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_thread_attachments_page
+        ON thread_attachments(thread_id, created_at DESC, id DESC);
       CREATE TABLE IF NOT EXISTS hook_runs (
         turn_id TEXT NOT NULL, hook_id TEXT NOT NULL, run_json TEXT NOT NULL,
         PRIMARY KEY(turn_id, hook_id)
@@ -311,6 +320,64 @@ export class SessionStore {
   getThread(id: string): ThreadRecord | null {
     const row = this.db.prepare('SELECT * FROM threads WHERE id = ?').get(id)
     return row ? this.rowToThread(row) : null
+  }
+
+  addAttachment(
+    threadId: string,
+    attachmentType: string,
+    identityKey: string,
+    payload: JsonValue,
+  ): { outcome: 'created' | 'existing'; attachment: ThreadAttachment } {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const inserted = this.db
+        .prepare(`
+        INSERT INTO thread_attachments(id, thread_id, attachment_type, identity_key, payload_json, created_at)
+        VALUES(?,?,?,?,?,?) ON CONFLICT(thread_id, attachment_type, identity_key) DO NOTHING
+      `)
+        .run(newId(), threadId, attachmentType, identityKey, JSON.stringify(payload), nowSeconds())
+      const row = this.db
+        .prepare(`
+        SELECT id, attachment_type AS attachmentType, identity_key AS identityKey,
+          payload_json AS payload, created_at AS createdAt FROM thread_attachments
+        WHERE thread_id=? AND attachment_type=? AND identity_key=?
+      `)
+        .get(threadId, attachmentType, identityKey)
+      const attachment: ThreadAttachment = { ...row, payload: JSON.parse(row.payload) }
+      this.db.exec('COMMIT')
+      return { outcome: inserted.changes === 1 ? 'created' : 'existing', attachment }
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  listAttachments(
+    threadId: string,
+    limit: number,
+    cursor: CatalogCursor | null,
+  ): ThreadAttachment[] {
+    const rows = this.db
+      .prepare(`
+      SELECT id, attachment_type AS attachmentType, identity_key AS identityKey,
+        payload_json AS payload, created_at AS createdAt FROM thread_attachments
+      WHERE thread_id=? ${cursor ? 'AND (created_at < ? OR (created_at = ? AND id < ?))' : ''}
+      ORDER BY created_at DESC, id DESC LIMIT ?
+    `)
+      .all(threadId, ...(cursor ? [cursor.value, cursor.value, cursor.id] : []), limit) as Array<
+      Omit<ThreadAttachment, 'payload'> & { payload: string }
+    >
+    return rows.map((row) => ({ ...row, payload: JSON.parse(row.payload) as JsonValue }))
+  }
+
+  removeAttachment(threadId: string, attachmentType: string, identityKey: string): string | null {
+    const row = this.db
+      .prepare(`
+      DELETE FROM thread_attachments WHERE thread_id=? AND attachment_type=? AND identity_key=?
+      RETURNING id
+    `)
+      .get(threadId, attachmentType, identityKey)
+    return row?.id ?? null
   }
 
   listThreads(
@@ -914,6 +981,7 @@ export class SessionStore {
         'thread_goals',
         'goal_ledgers',
         'thread_usage',
+        'thread_attachments',
       ])
         this.db.prepare(`DELETE FROM ${table} WHERE thread_id=?`).run(threadId)
       this.db.prepare('DELETE FROM threads WHERE id=?').run(threadId)

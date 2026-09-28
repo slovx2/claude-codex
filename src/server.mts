@@ -113,6 +113,7 @@ import {
 } from './server-helpers.mjs'
 import { SkillsRpc } from './skills-rpc.mjs'
 import { PINNED_SECTION_ID, type SessionStore } from './store.mjs'
+import { threadAttachmentRequest } from './thread-attachments.mjs'
 import type { ThreadGoal } from './thread-goals.mjs'
 import { patchGitInfo } from './thread-metadata.mjs'
 import type {
@@ -523,6 +524,17 @@ export class CodexClaudeAppServer {
         return this.threadList(asRecord(params))
       case 'thread/read':
         return this.threadRead(asRecord(params))
+      case 'thread/attachment/add':
+      case 'thread/attachment/list':
+      case 'thread/attachment/remove':
+        return threadAttachmentRequest(this.store, method, asRecord(params), (update) => {
+          setImmediate(() =>
+            this.notifyThread(update.threadId, {
+              method: 'thread/attachment/updated',
+              params: update,
+            }),
+          )
+        })
       case 'thread/turns/list':
         return this.threadTurnsList(asRecord(params))
       case 'thread/items/list':

@@ -120,6 +120,11 @@ codex.
 
 ## Robustness notes
 
+- 附件元数据由 `thread/attachment/add|list|remove` 真实持久化到 SQLite，
+  `(threadId, attachmentType, identityKey)` 唯一；重复添加返回原内容，不覆盖 payload。
+  仅创建和实际删除推送 `thread/attachment/updated`，分页游标绑定所属会话。
+  ATTACHMENT-002 用真实 SDK/CLI 回合验证重启、跨线程及类型隔离、删除边界后继续分页、
+  历史和源文件不变、删除会话清理附件；此能力不提供图片上传或 fileId 下载。
 - Unix socket paths are validated against the platform `sun_path` limit (~104
   macOS / ~108 Linux); a deep `CODEX_HOME` falls back to a short hashed path
   under the system temp dir.
