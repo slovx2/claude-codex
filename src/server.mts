@@ -117,6 +117,7 @@ import { PINNED_SECTION_ID, type SessionStore } from './store.mjs'
 import { threadAttachmentRequest } from './thread-attachments.mjs'
 import type { ThreadGoal } from './thread-goals.mjs'
 import { patchGitInfo } from './thread-metadata.mjs'
+import { threadTimelineList } from './thread-timeline.mjs'
 import { parseTurnSettings } from './turn-settings.mjs'
 import type {
   ClaudeRuntime,
@@ -561,6 +562,8 @@ export class CodexClaudeAppServer {
         })
       case 'thread/turns/list':
         return this.threadTurnsList(asRecord(params))
+      case 'thread/timeline/list':
+        return threadTimelineList(this.store, asRecord(params))
       case 'thread/items/list':
         return this.threadItemsList(asRecord(params))
       case 'thread/delete': {

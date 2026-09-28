@@ -100,6 +100,11 @@ codex.
   (`bespoke_event_handling.rs` clears items; `turn_processor.rs` returns an empty
   turn). The timeline is driven by the `item/*` event stream; loaded items are
   only returned by history reads (`thread/read`, `thread/turns/list`).
+- `thread/timeline/list` 从持久化历史返回普通回合边界及完整条目。最新页优先，
+  页内升序，`nextCursor` 向更早历史推进；活动回合没有完成边界。
+  0.157.1 的官方 TS/实际 wire 与 JSON Schema 对回合边界字段命名不一致，
+  适配器同时提供同值的驼峰和下划线字段。普通会话的
+  `activeRealtimeSessionAtPageStart` 为 `null`，不代表支持实时语音。
 - The user message is recorded in turn history but, like the real app-server, is
   not surfaced as a `userMessage` `item/*` event during a turn (including
   `turn/steer`). `review/start`'s response carries the synthesized `userMessage`

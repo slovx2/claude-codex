@@ -68,6 +68,7 @@ const result = spawnSync(
     'dist/test/native-config.test.mjs',
     'dist/test/native-rate-limits.test.mjs',
     'dist/test/native-history.test.mjs',
+    'dist/test/native-timeline.test.mjs',
     'dist/test/native-session.test.mjs',
     'dist/test/native-sections.test.mjs',
     'dist/test/native-rollback-failure.test.mjs',
