@@ -59,6 +59,7 @@ import { ProtocolError, submissionHash } from './protocol-contract.mjs'
 import { type NativeRateLimitInfo, rateLimitCredentialScope } from './rate-limits.mjs'
 import {
   deniedTool,
+  isFileEditTool,
   isPlanFile,
   type OriginalBashInputs,
   planDirectory,
@@ -539,7 +540,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     if (context.outputFormat) opts.outputFormat = context.outputFormat
 
     // 完全访问由回调授权，支持 root 部署且保留计划确认和用户提问。
-    const mode = derivePermissionMode(context.approvalPolicy, context.sandboxMode, context.planMode)
+    const mode = derivePermissionMode(context.planMode)
     opts.permissionMode = mode
     const permissionHooks = opts.hooks as { PreToolUse: Array<{ hooks: unknown[] }> }
     permissionHooks.PreToolUse.push({
@@ -624,7 +625,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
             if (event.tool_name !== 'EnterPlanMode' && event.tool_name !== 'ExitPlanMode') return {}
             const enabled = event.tool_name === 'EnterPlanMode'
             await pending.query.setPermissionMode(
-              derivePermissionMode(context.approvalPolicy, context.sandboxMode, enabled),
+              derivePermissionMode(enabled),
             )
             context.planMode = enabled
             await pending.handlers.onEvent({ type: 'plan_mode', enabled })
@@ -757,6 +758,15 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       if (context.planMode && !(toolName === 'Bash' && originalBashInputs.has(toolUseId)))
         return { behavior: 'deny', message: '计划模式不能执行副作用' }
       if (autoAllow) return { behavior: 'allow', updatedInput: input }
+      // never 只表示不发起审批：适配器已按授权目录把关的文件编辑，以及已套 OS 沙箱的 Bash
+      // 直接执行；越界或其他工具仍拒绝，不因不审批而扩大权限。
+      if (
+        context.approvalPolicy === 'never' &&
+        (isFileEditTool(toolName) || (toolName === 'Bash' && originalBashInputs.has(toolUseId)))
+      ) {
+        const reason = deniedTool(context, toolName, input)
+        return reason ? { behavior: 'deny', message: reason } : { behavior: 'allow', updatedInput: input }
+      }
       if (
         !allowsApproval(
           context.approvalPolicy,
@@ -1772,19 +1782,11 @@ function rateLimitNotice(info: Record<string, unknown> | undefined): string {
   return `${status}${used}.${reset}`
 }
 
-// Codex's (approvalPolicy, sandbox, planMode) tri-state → Claude SDK
-// permissionMode. This preserves the adapter's old sidecar mapping while using
-// the native TS SDK runtime.
-function derivePermissionMode(
-  approvalPolicy: ApprovalPolicy | null,
-  sandboxMode: string | null,
-  planMode: boolean,
-): 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto' {
+// Codex 的审批策略与沙箱由 PreToolUse 边界检查和 canUseTool 实施；SDK 只区分计划模式。
+// never 也必须走 canUseTool：dontAsk 会在回调前拒绝授权目录内的写入。
+function derivePermissionMode(planMode: boolean): 'default' | 'plan' {
   // 会话选择是权限来源，环境变量不能覆盖客户端授权。
-  if (planMode) return 'plan'
-  if (sandboxMode === 'danger-full-access' && approvalPolicy === 'never') return 'default'
-  if (approvalPolicy === 'never') return 'dontAsk'
-  return 'default'
+  return planMode ? 'plan' : 'default'
 }
 
 // Subagent tool detection — same allowlist as Python's is_subagent_tool and

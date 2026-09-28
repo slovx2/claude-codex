@@ -20,6 +20,10 @@ const readTools = new Set([
   'WebSearch',
 ])
 const fileTools = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
+
+export function isFileEditTool(name: string): boolean {
+  return fileTools.has(name)
+}
 export type OriginalBashInputs = Map<string, Record<string, unknown>>
 
 function isStructuredOutput(context: RuntimeTurnContext, name: string): boolean {
