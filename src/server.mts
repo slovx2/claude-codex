@@ -126,6 +126,7 @@ import type {
   JsonRpcId,
   JsonRpcRequest,
   JsonRpcResponse,
+  NativeSessionFork,
   PermissionDecision,
   RpcPeer,
   RuntimeEvent,
@@ -367,6 +368,7 @@ export class CodexClaudeAppServer {
       'thread/resume',
       'thread/fork',
       'thread/rollback',
+      'thread/revert',
       'thread/inject_items',
       'thread/delete',
       'thread/compact/start',
@@ -375,9 +377,13 @@ export class CodexClaudeAppServer {
       'review/start',
     ].includes(request.method)
     const nativeMutation =
-      ['thread/fork', 'thread/rollback', 'thread/inject_items', 'review/start'].includes(
-        request.method,
-      ) ||
+      [
+        'thread/fork',
+        'thread/rollback',
+        'thread/revert',
+        'thread/inject_items',
+        'review/start',
+      ].includes(request.method) ||
       (recoverContext &&
         typeof threadId === 'string' &&
         !!this.store.pendingContextInjection(threadId))
@@ -647,6 +653,8 @@ export class CodexClaudeAppServer {
         return this.threadBackgroundTerminalsClean(asRecord(params))
       case 'thread/rollback':
         return this.threadRollback(asRecord(params))
+      case 'thread/revert':
+        return this.threadRevert(asRecord(params))
       case 'thread/loaded/list':
         return this.threadLoadedList(asRecord(params))
       case 'thread/inject_items':
@@ -1031,7 +1039,9 @@ export class CodexClaudeAppServer {
     const parent = this.store.getThread(parentId)
     if (!parent) throw new Error(`unknown thread: ${parentId}`)
     if (this.activeTurnByThread.has(parentId)) throw new ProtocolError(-32009, '活动会话不能分叉')
-    const nativeSession = parent.claudeSessionId ? await this.forkNativeSession(parent) : null
+    const nativeFork = parent.claudeSessionId ? await this.forkNativeSession(parent) : null
+    const parentTurns = this.store.listTurns(parentId)
+    const boundaries = this.remapNativeBoundaries(parentTurns, nativeFork)
     const now = nowSeconds()
     const id = newId()
     const requestedCwd = stringOr(params.cwd, parent.cwd)
@@ -1049,7 +1059,7 @@ export class CodexClaudeAppServer {
       cwd,
       model: modelFromParams(params, parent.model),
       reasoningEffort: reasoningEffortFromParams(params, parent.reasoningEffort),
-      claudeSessionId: nativeSession,
+      claudeSessionId: nativeFork?.sessionId ?? null,
       createdAt: now,
       updatedAt: now,
       status: { type: 'idle' },
@@ -1104,12 +1114,12 @@ export class CodexClaudeAppServer {
       this.store.saveThreadGoal({ ...parentGoal, threadId: id })
     const parentUsage = this.store.threadUsage(parentId)
     this.saveRuntimeSettings(id, params)
-    for (const turn of this.store.listTurns(parentId)) {
+    for (const turn of parentTurns) {
       const cloned = { ...turn, id: newId(), threadId: id }
       this.store.upsertTurn(cloned)
       if (parentUsage?.turnId === turn.id)
         this.store.saveThreadUsage(id, cloned.id, parentUsage.tokenUsage)
-      const boundary = this.store.nativeBoundary(turn.id)
+      const boundary = boundaries.get(turn.id)
       if (boundary) this.store.saveNativeBoundary(cloned.id, boundary)
     }
     recordRunEvent('thread.forked', {
@@ -1743,17 +1753,37 @@ export class CodexClaudeAppServer {
     return {}
   }
 
-  private async forkNativeSession(thread: ThreadRecord, boundary?: string): Promise<string> {
+  private async forkNativeSession(
+    thread: ThreadRecord,
+    boundary?: string,
+  ): Promise<NativeSessionFork> {
     if (!this.runtime.forkSession || !thread.claudeSessionId)
       throw new ProtocolError(-32000, '缺少原生会话或分叉能力')
     return this.runtime.forkSession(thread.claudeSessionId, thread.cwd, boundary)
+  }
+
+  private remapNativeBoundaries(
+    turns: TurnRecord[],
+    fork: NativeSessionFork | null,
+  ): Map<string, string> {
+    const result = new Map<string, string>()
+    if (!fork) return result
+    for (const turn of turns) {
+      const old = this.store.nativeBoundary(turn.id)
+      if (!old) continue
+      const mapped = fork.messageIds[old]
+      if (!mapped) throw new ProtocolError(-32000, '原生分叉缺少保留回合的消息边界')
+      result.set(turn.id, mapped)
+    }
+    return result
   }
 
   private async threadRollback(params: Record<string, unknown>): Promise<unknown> {
     const threadId = stringOr(params.threadId, '')
     const thread = this.store.getThread(threadId)
     if (!thread) throw new Error(`unknown thread: ${threadId}`)
-    if (this.activeTurnByThread.has(threadId)) throw new ProtocolError(-32009, '活动会话不能回退')
+    if (this.activeTurnByThread.has(threadId) || this.interruptingByThread.has(threadId))
+      throw new ProtocolError(-32009, '活动会话不能回退')
     // Honor the protocol's `numTurns: u32, must be >= 1` — drop that many
     // turns from the end of the thread. Without this, App's rewind UI sends
     // the request and we silently return the unchanged thread, leaving the
@@ -1762,14 +1792,52 @@ export class CodexClaudeAppServer {
     if (typeof numTurns !== 'number' || !Number.isInteger(numTurns) || numTurns < 1)
       throw new ProtocolError(-32602, 'numTurns 必须是正整数')
     const retained = this.store.listTurns(threadId).slice(0, -numTurns)
+    let nativeFork: NativeSessionFork | null = null
     if (thread.claudeSessionId && retained.length) {
       const boundary = this.store.nativeBoundary(retained.at(-1)!.id)
       if (!boundary) throw new ProtocolError(-32000, '缺少原生消息边界，不能安全回退')
-      thread.claudeSessionId = await this.forkNativeSession(thread, boundary)
+      nativeFork = await this.forkNativeSession(thread, boundary)
+      thread.claudeSessionId = nativeFork.sessionId
     } else thread.claudeSessionId = null
-    const dropped = this.store.commitRollback(thread, numTurns)
+    const boundaries = this.remapNativeBoundaries(retained, nativeFork)
+    const dropped = this.store.commitRollback(thread, numTurns, boundaries)
     debugLog('thread.rollback', { threadId, requested: numTurns, dropped })
     return { thread: this.toThread(thread, this.store.listTurns(threadId)) }
+  }
+
+  private async threadRevert(params: Record<string, unknown>): Promise<unknown> {
+    const threadId = requiredString(params.threadId, 'threadId')
+    const beforeTurnId = requiredString(params.beforeTurnId, 'beforeTurnId')
+    if (!this.store.getThread(threadId)) throw new ProtocolError(-32602, '未知会话')
+    const turns = this.store.listTurns(threadId)
+    const index = turns.findIndex((turn) => turn.id === beforeTurnId)
+    if (index < 0) throw new ProtocolError(-32602, 'beforeTurnId 不属于此会话的当前历史')
+    // 两种 historyMode 共用同一持久化历史；保留原模式，不阻断旧会话使用新入口。
+    // 原生分叉与 SQLite 提交共用旧入口的事务，文件系统副作用不回退。
+    await this.threadRollback({ threadId, numTurns: turns.length - index })
+    const retained = this.store.listTurns(threadId)
+    const items = retained.flatMap((turn) => turn.items.map((item) => ({ turnId: turn.id, item })))
+    const pageParams = { limit: 1, sortDirection: 'desc' }
+    const turnsBackwardsCursor = pageRecords(
+      retained,
+      pageParams,
+      `turns:${threadId}`,
+      (turn) => turn.id,
+    ).backwardsCursor
+    const itemsBackwardsCursor = pageRecords(
+      items,
+      pageParams,
+      `items:${threadId}:`,
+      (entry) => `${entry.turnId}:${entry.item.id}`,
+    ).backwardsCursor
+    const thread = this.store.getThread(threadId)!
+    setImmediate(() =>
+      this.notifyThread(threadId, {
+        method: 'thread/reverted',
+        params: { threadId },
+      }),
+    )
+    return { thread: this.toThread(thread, []), turnsBackwardsCursor, itemsBackwardsCursor }
   }
 
   private threadShellCommand(peer: RpcPeer, params: Record<string, unknown>): unknown {

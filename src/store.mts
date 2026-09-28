@@ -1027,11 +1027,16 @@ export class SessionStore {
   }
 
   // 原生分叉成功后一次提交 session 指针及展示历史。崩溃最多留下未引用的原生分支。
-  commitRollback(thread: ThreadRecord, numTurns: number): number {
+  commitRollback(
+    thread: ThreadRecord,
+    numTurns: number,
+    boundaries: ReadonlyMap<string, string>,
+  ): number {
     this.db.exec('BEGIN IMMEDIATE')
     try {
       this.upsertThread(thread)
       const dropped = this.deleteRecentTurns(thread.id, numTurns)
+      for (const [turnId, messageId] of boundaries) this.saveNativeBoundary(turnId, messageId)
       this.db.exec('COMMIT')
       return dropped
     } catch (error) {

@@ -10,7 +10,12 @@ import {
   resolveRuntimeConfig,
 } from './runtime-config.mjs'
 import type { RuntimeTurnSettings } from './turn-settings.mjs'
-import type { ClaudeRuntime, RuntimeHandlers, RuntimeTurnContext } from './types.mjs'
+import type {
+  ClaudeRuntime,
+  NativeSessionFork,
+  RuntimeHandlers,
+  RuntimeTurnContext,
+} from './types.mjs'
 import { debugLog } from './util.mjs'
 
 export function createRuntime(): ClaudeRuntime {
@@ -69,7 +74,11 @@ class SelectableRuntime implements ClaudeRuntime {
     }
   }
 
-  async forkSession(sessionId: string, cwd: string, upToMessageId?: string): Promise<string> {
+  async forkSession(
+    sessionId: string,
+    cwd: string,
+    upToMessageId?: string,
+  ): Promise<NativeSessionFork> {
     const runtime = this.runtimeFor(this.config.type)
     if (!runtime.forkSession) throw new Error('当前运行时不支持原生会话分叉')
     return runtime.forkSession(sessionId, cwd, upToMessageId)

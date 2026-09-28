@@ -51,6 +51,7 @@ import { sdkMcpStartupEnvironment } from './mcp-config.mjs'
 import { appendNativeContext, type ContextInjection } from './native-context.mjs'
 import { NativeMcpBridge } from './native-mcp-bridge.mjs'
 import { NativeProcess, succeedsWithin } from './native-process.mjs'
+import { forkNativeSession } from './native-session-fork.mjs'
 import { NativeTurnInput } from './native-turn-input.mjs'
 import { mergePermissionOverlay, permissionToolName } from './permission-grants.mjs'
 import { permissionToolServer } from './permission-tools.mjs'
@@ -67,6 +68,7 @@ import {
 import type { RuntimeTurnSettings } from './turn-settings.mjs'
 import type {
   ClaudeRuntime,
+  NativeSessionFork,
   PermissionDecision,
   RuntimeHandlers,
   RuntimeTurnContext,
@@ -391,13 +393,13 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     return true
   }
 
-  async forkSession(sessionId: string, cwd: string, upToMessageId?: string): Promise<string> {
+  async forkSession(
+    sessionId: string,
+    cwd: string,
+    upToMessageId?: string,
+  ): Promise<NativeSessionFork> {
     const sdk = await this.loadSdk()
-    const result = await sdk.forkSession(sessionId, {
-      dir: cwd,
-      ...(upToMessageId ? { upToMessageId } : {}),
-    })
-    return result.sessionId
+    return forkNativeSession(sdk, sessionId, cwd, upToMessageId)
   }
 
   async interrupt(threadId: string): Promise<void> {

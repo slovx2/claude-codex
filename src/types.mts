@@ -476,6 +476,11 @@ export interface RuntimeHandlers {
   ): Promise<UserInputAnswers>
 }
 
+export interface NativeSessionFork {
+  sessionId: string
+  messageIds: Record<string, string>
+}
+
 export interface ClaudeRuntime {
   updateTurnSettings?(
     threadId: string,
@@ -485,7 +490,7 @@ export interface ClaudeRuntime {
   appendContext?(
     context: import('./native-context.mjs').ContextInjection,
   ): Promise<{ boundary: string }>
-  forkSession?(sessionId: string, cwd: string, upToMessageId?: string): Promise<string>
+  forkSession?(sessionId: string, cwd: string, upToMessageId?: string): Promise<NativeSessionFork>
   runTurn(context: RuntimeTurnContext, handlers: RuntimeHandlers): Promise<void>
   steer(threadId: string, prompt: string): Promise<void>
   interrupt(threadId: string): Promise<void>

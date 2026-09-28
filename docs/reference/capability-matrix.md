@@ -105,6 +105,13 @@ codex.
   0.157.1 的官方 TS/实际 wire 与 JSON Schema 对回合边界字段命名不一致，
   适配器同时提供同值的驼峰和下划线字段。普通会话的
   `activeRealtimeSessionAtPageStart` 为 `null`，不代表支持实时语音。
+- `thread/revert` 按 `beforeTurnId` 删除目标回合及后续历史，通过真实 SDK 分叉
+  保留原生上下文，SQLite 事务同时提交会话指针和展示历史。响应不内嵌回合，
+  返回可包含最后保留条目的反向分页游标，并发布 `thread/reverted`。
+  两种 `historyMode` 共用相同持久化数据，因此旧会话也可使用该入口；
+  活动回合和其他线程的目标会被拒绝。回退不会撤销已有文件改动。
+  SDK 分叉重新生成 UUID，适配器通过公开快照导出读取真实来源映射；
+  回退时将保留回合的新边界与 session 指针一起事务提交，支持连续回退。
 - The user message is recorded in turn history but, like the real app-server, is
   not surfaced as a `userMessage` `item/*` event during a turn (including
   `turn/steer`). `review/start`'s response carries the synthesized `userMessage`

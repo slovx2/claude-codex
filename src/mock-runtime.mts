@@ -1,12 +1,17 @@
 import { randomUUID } from 'node:crypto'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { ClaudeRuntime, RuntimeHandlers, RuntimeTurnContext } from './types.mjs'
+import type {
+  ClaudeRuntime,
+  NativeSessionFork,
+  RuntimeHandlers,
+  RuntimeTurnContext,
+} from './types.mjs'
 import { sleep } from './util.mjs'
 
 export class MockRuntime implements ClaudeRuntime {
-  async forkSession(_sessionId: string, _cwd: string): Promise<string> {
-    return `mock-${randomUUID()}`
+  async forkSession(_sessionId: string, _cwd: string): Promise<NativeSessionFork> {
+    return { sessionId: `mock-${randomUUID()}`, messageIds: {} }
   }
   private interrupted = new Set<string>()
 

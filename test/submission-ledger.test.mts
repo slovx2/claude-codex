@@ -84,20 +84,36 @@ test('CONTEXT-003：rollback 数据库失败时原生指针与历史一起回滚
     store.saveSubmission(turn('first'), 'm1', 'h1')
     store.saveSubmission(turn('second'), 'm2', 'h2')
     store.saveNativeBoundary('second', 'native-second')
+    store.saveNativeBoundary('first', 'native-first')
+    const boundaries = new Map([['first', 'fork-first']])
     connection.exec(
       "CREATE TRIGGER fail_delete BEFORE DELETE ON turns BEGIN SELECT RAISE(ABORT, 'injected disk failure'); END",
     )
     assert.throws(
-      () => store.commitRollback({ ...thread, claudeSessionId: 'fork' }, 1),
+      () => store.commitRollback({ ...thread, claudeSessionId: 'fork' }, 1, boundaries),
       /injected disk failure/,
     )
     assert.equal(store.getThread(thread.id)?.claudeSessionId, 'original')
     assert.equal(store.listTurns(thread.id).length, 2)
+    assert.equal(store.nativeBoundary('first'), 'native-first')
     connection.exec('DROP TRIGGER fail_delete')
-    assert.equal(store.commitRollback({ ...thread, claudeSessionId: 'fork' }, 1), 1)
+    connection.exec(
+      "CREATE TRIGGER fail_boundary BEFORE UPDATE ON native_turn_boundaries BEGIN SELECT RAISE(ABORT, 'injected boundary failure'); END",
+    )
+    assert.throws(
+      () => store.commitRollback({ ...thread, claudeSessionId: 'fork' }, 1, boundaries),
+      /injected boundary failure/,
+    )
+    assert.equal(store.getThread(thread.id)?.claudeSessionId, 'original')
+    assert.equal(store.listTurns(thread.id).length, 2)
+    assert.equal(store.nativeBoundary('first'), 'native-first')
+    assert.equal(store.nativeBoundary('second'), 'native-second')
+    connection.exec('DROP TRIGGER fail_boundary')
+    assert.equal(store.commitRollback({ ...thread, claudeSessionId: 'fork' }, 1, boundaries), 1)
     store.close()
     store = new SessionStore(path)
     assert.equal(store.getThread(thread.id)?.claudeSessionId, 'fork')
+    assert.equal(store.nativeBoundary('first'), 'fork-first')
     assert.deepEqual(
       store.listTurns(thread.id).map((entry) => entry.id),
       ['first'],

@@ -72,6 +72,7 @@ const result = spawnSync(
     'dist/test/native-session.test.mjs',
     'dist/test/native-sections.test.mjs',
     'dist/test/native-rollback-failure.test.mjs',
+    'dist/test/native-revert.test.mjs',
     'dist/test/native-submit-failure.test.mjs',
     'dist/test/native-goals.test.mjs',
     'dist/test/native-goal-execution.test.mjs',
