@@ -61,6 +61,7 @@ Agent SDK sidecar; runtime selection is pluggable. Status legend: **Supported**,
 | Fuzzy file search | Supported | One-shot `fuzzyFileSearch` plus the stateful session API (`sessionStart/Update/Stop`) that streams `fuzzyFileSearch/sessionUpdated` results and a final `sessionCompleted`. |
 | Filesystem RPCs | Supported | `fs/readFile`, write, metadata, list, remove, copy, watch/unwatch (Codex v2-shaped). |
 | Command/process RPCs | Supported | `command/exec` and `process/spawn` implemented. |
+| 进程诊断 | Supported | `server/diagnostics` 返回当前适配器 PID、RSS 和实际活动回合/已初始化连接计数；physical footprint 无等价测量时返回 null。仅统计当前进程，不包含 CLI 子进程或 Worker 总占用；不会发起模型请求或返回配置、路径、凭据。 |
 
 ## Not applicable / unsupported
 

@@ -481,6 +481,19 @@ export class CodexClaudeAppServer {
     switch (method) {
       case 'runtime/info':
         return buildInfo()
+      case 'server/diagnostics':
+        // 只报告本适配器进程的实测数据；没有等价测量的物理占用保持未知。
+        return {
+          process: {
+            id: process.pid,
+            residentMemoryBytes: process.memoryUsage.rss(),
+            physicalFootprintBytes: null,
+          },
+          gauges: [
+            { name: 'claude_adapter.active_turns', value: this.activeTurnByThread.size },
+            { name: 'claude_adapter.initialized_connections', value: this.accountPeers.size },
+          ],
+        }
       case 'initialize': {
         this.accountPeers.add(peer)
         const initParams = asRecord(params)
