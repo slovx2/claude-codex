@@ -313,6 +313,8 @@ export class CodexClaudeAppServer {
 
   async stop(): Promise<void> {
     if (this.stopped) return
+    // 先同步通知仍连接的客户端审批已失效，再抑制退出过程中的其他事件。
+    this.pendingInteractions.close()
     this.stopped = true
     this.permissionSessionGrants.clear()
     this.mcpOAuth.close()
@@ -327,7 +329,6 @@ export class CodexClaudeAppServer {
     this.completeActiveTurns('interrupted', { message: 'server stopped' })
     await this.runtime.stop()
     this.skills.close()
-    this.pendingInteractions.close()
     this.store.close()
   }
 
