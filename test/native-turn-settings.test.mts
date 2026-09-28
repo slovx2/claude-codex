@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -98,7 +98,7 @@ test('TURNSETTINGS-001：真实活动回合更新模型与effort，拒绝整批�
       { model: 'opus', effort: 'invalid' },
       { model: 'opus', summary: 3 },
       { model: 'opus', serviceTier: false },
-      { approvalsReviewer: 'guardian_subagent' },
+      { model: 'opus', approvalsReviewer: 'invalid' },
       { model: 'opus', unsupported: true },
     ])
       await client.raw('turn/settings/update', { ...target, ...invalid }, -32602)
@@ -174,6 +174,114 @@ test('TURNSETTINGS-001：真实活动回合更新模型与effort，拒绝整批�
     await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
 })
+
+for (const [reviewer, decision] of [
+  ['auto_review', 'accept'],
+  ['guardian_subagent', 'decline'],
+] as const) {
+  test(`TURNSETTINGS-004：${reviewer} 降级为用户审批，模型切换继续且人工${decision}生效`, {
+    timeout: 60_000,
+  }, async () => {
+    const home = await mkdtemp(join(tmpdir(), 'native-settings-reviewer-'))
+    const model = new MockLLM()
+    const client = await ProtocolClient.start(home, await model.start())
+    const target = join(home, 'manual-review.txt')
+    let releaseQuestion!: () => void
+    const questionReady = new Promise<void>((resolve) => {
+      releaseQuestion = resolve
+    })
+    let releaseApproval!: () => void
+    const approvalReady = new Promise<void>((resolve) => {
+      releaseApproval = resolve
+    })
+    let approvals = 0
+    try {
+      client.onServerRequest = async (method, params) => {
+        if (method === 'item/tool/requestUserInput') {
+          await questionReady
+          return { answers: { [params.questions[0].id]: { answers: ['继续'] } } }
+        }
+        assert.equal(method, 'item/fileChange/requestApproval')
+        approvals++
+        await approvalReady
+        return { decision }
+      }
+      model.enqueue(() => [
+        {
+          type: 'tool_use',
+          id: 'toolu_before_review_settings',
+          name: 'AskUserQuestion',
+          input: {
+            questions: [
+              {
+                question: '继续验证模型与人工审批',
+                header: '审批降级',
+                multiSelect: false,
+                options: [
+                  { label: '继续', description: '继续验收' },
+                  { label: '停止', description: '结束回合' },
+                ],
+              },
+            ],
+          },
+        },
+      ])
+      model.enqueue((request) => {
+        assert.equal(request.model, 'claude-opus-5-5')
+        assert.equal(request.output_config?.effort, 'high')
+        return [
+          {
+            type: 'tool_use',
+            id: 'toolu_manual_write',
+            name: 'Write',
+            input: { file_path: target, content: 'MANUALLY_REVIEWED' },
+          },
+        ]
+      })
+      model.enqueue((request) => {
+        assert.equal(request.model, 'claude-opus-5-5')
+        return [{ type: 'text', text: 'MANUAL_REVIEW_DONE' }]
+      })
+      const { thread } = await client.request('thread/start', {
+        cwd: home,
+        sandbox: 'danger-full-access',
+        approvalPolicy: 'on-request',
+      })
+      const { turn } = await client.request('turn/start', {
+        threadId: thread.id,
+        input: [{ type: 'text', text: '等待设置更新，再写文件验证用户审批' }],
+      })
+      await client.notification('item/tool/requestUserInput')
+      assert.deepEqual(
+        await client.request('turn/settings/update', {
+          threadId: thread.id,
+          turnId: turn.id,
+          model: 'opus',
+          effort: 'high',
+          approvalsReviewer: reviewer,
+        }),
+        { status: 'applied' },
+      )
+      releaseQuestion()
+      await client.notification('item/fileChange/requestApproval', (p) => p.turnId === turn.id)
+      // 自动审批偏好不得跳过人工回答；拒绝必须保持无文件副作用。
+      await assert.rejects(access(target), { code: 'ENOENT' })
+      releaseApproval()
+      assert.equal((await client.completed(turn.id)).status, 'completed')
+      if (decision === 'accept') assert.equal(await readFile(target, 'utf8'), 'MANUALLY_REVIEWED')
+      else await assert.rejects(access(target), { code: 'ENOENT' })
+      assert.equal(approvals, 1)
+      assert.equal(model.requests.length, 3)
+      model.assertConsumed()
+    } finally {
+      releaseQuestion()
+      releaseApproval()
+      await client.close()
+      await model.close()
+      await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    }
+  })
+}
 
 test('TURNSETTINGS-002：启动后立即发布设置等待真实CLI就绪，默认可选字段不阻断回合', {
   timeout: 60_000,

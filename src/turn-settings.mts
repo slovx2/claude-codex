@@ -28,8 +28,12 @@ export function parseTurnSettings(params: Record<string, unknown>): RuntimeTurnS
     throw new ProtocolError(-32602, 'summary格式无效')
   if (params.serviceTier != null && typeof params.serviceTier !== 'string')
     throw new ProtocolError(-32602, 'serviceTier格式无效')
-  if (params.approvalsReviewer != null && params.approvalsReviewer !== 'user')
-    throw new ProtocolError(-32602, '当前运行时仅支持用户审批')
+  if (
+    params.approvalsReviewer != null &&
+    (typeof params.approvalsReviewer !== 'string' ||
+      !['user', 'auto_review', 'guardian_subagent'].includes(params.approvalsReviewer))
+  )
+    throw new ProtocolError(-32602, 'approvalsReviewer格式无效')
   const settings: RuntimeTurnSettings = {}
   if (params.model != null) {
     const model = requiredString(params.model, 'model')
@@ -53,5 +57,8 @@ export function parseTurnSettings(params: Record<string, unknown>): RuntimeTurnS
       summary: params.summary ?? null,
       serviceTier: params.serviceTier ?? null,
     })
+  // Claude没有自动审查器，保留现有人工审批；不能阻断同一请求中有效的模型设置。
+  if (params.approvalsReviewer != null && params.approvalsReviewer !== 'user')
+    debugLog('turn.settings.reviewerFallback', { reviewer: 'user' })
   return settings
 }
