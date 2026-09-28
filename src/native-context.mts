@@ -63,8 +63,13 @@ export function parseContextItems(items: unknown): ContextBlock[] {
       if (block.type !== 'input_image')
         throw new ProtocolError(-32602, 'Claude 注入仅支持 input_text 和 input_image')
       keys(block, ['type', 'image_url', 'detail'])
-      if (block.detail != null && block.detail !== 'auto')
-        throw new ProtocolError(-32602, 'Claude 不支持指定图片 detail')
+      if (
+        block.detail != null &&
+        (typeof block.detail !== 'string' ||
+          !['auto', 'low', 'high', 'original'].includes(block.detail))
+      )
+        throw new ProtocolError(-32602, '图片 detail 格式无效')
+      // Claude 没有等价的精度参数；忽略合法偏好，完整保留正文和图片。
       if (typeof block.image_url !== 'string')
         throw new ProtocolError(-32602, 'input_image.image_url 必须是字符串')
       const match = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(

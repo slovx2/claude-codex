@@ -47,6 +47,92 @@ async function startTurn(client: ProtocolClient, threadId: string, text: string)
   return turn.id
 }
 
+test('CONTEXT-009：图片精度偏好不阻断正文和图片追加，重启后真实入模且无重复追加', {
+  timeout: 90_000,
+}, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'native-context-detail-'))
+  const model = new MockLLM()
+  const endpoint = await model.start()
+  let client = await ProtocolClient.start(home, endpoint)
+  const db = new DatabaseSync(join(home, 'adapter', 'state.sqlite'), { readOnly: true })
+  try {
+    const { thread } = await client.request('thread/start', { cwd: home, sandbox: 'read-only' })
+    const items = ['auto', 'low', 'high', 'original'].map((detail) => ({
+      type: 'message',
+      role: 'user',
+      content: [
+        { type: 'input_text', text: `DETAIL_PREFERENCE_${detail}` },
+        { type: 'input_image', image_url: `data:image/png;base64,${png}`, detail },
+      ],
+    }))
+    await client.request('thread/inject_items', { threadId: thread.id, items })
+    assert.equal(model.requests.length, 0, '追加上下文不能触发模型')
+    const [injection] = entries(db)
+    assert.ok(injection)
+    assert.equal(injection.committed, 1)
+    const persisted = (await nativeMessages(home, injection.context.sessionId)).filter(
+      (message) => message.uuid === injection.context.messageId,
+    )
+    assert.equal(persisted.length, 1)
+    assert.deepEqual(persisted[0].message.content, injection.context.content)
+    assert.equal(persisted[0].message.content.length, 8, '正文和图片必须全部保留')
+    for (const invalid of [false, 1, 'unknown']) {
+      await client.raw(
+        'thread/inject_items',
+        {
+          threadId: thread.id,
+          items: [
+            textItem('INVALID_BATCH_MUST_NOT_PERSIST'),
+            {
+              type: 'message',
+              role: 'user',
+              content: [
+                { type: 'input_image', image_url: `data:image/png;base64,${png}`, detail: invalid },
+              ],
+            },
+          ],
+        },
+        -32602,
+      )
+    }
+    assert.equal(entries(db).length, 1, '无效批次不能部分写入')
+    await client.close()
+    client = await ProtocolClient.start(home, endpoint)
+    await client.request('thread/resume', { threadId: thread.id })
+    model.enqueue((request) => {
+      const blocks = request.messages.flatMap((message: any) =>
+        Array.isArray(message.content) ? message.content : [],
+      )
+      for (const detail of ['auto', 'low', 'high', 'original'])
+        assert.ok(
+          blocks.some(
+            (block: any) =>
+              block.type === 'text' && block.text.includes(`DETAIL_PREFERENCE_${detail}`),
+          ),
+        )
+      const images = blocks.filter((block: any) => block.type === 'image')
+      assert.equal(images.length, 4)
+      for (const image of images)
+        assert.deepEqual(image.source, {
+          type: 'base64',
+          media_type: 'image/png',
+          data: png,
+        })
+      assert.doesNotMatch(JSON.stringify(request.messages), /INVALID_BATCH_MUST_NOT_PERSIST/)
+      return [{ type: 'text', text: 'ALL_DETAIL_IMAGES_PRESENT' }]
+    })
+    await startTurn(client, thread.id, 'CONTINUE_WITH_DETAIL_IMAGES')
+    assert.equal(model.requests.length, 1)
+    model.assertConsumed()
+    assert.equal(entries(db).length, 1)
+  } finally {
+    db.close()
+    await client.close()
+    await model.close()
+    await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
+
 test('CONTEXT-004：真实原生追加零模型调用，文图重启入模，分叉回退保留边界且不伪造 Turn', {
   timeout: 90_000,
 }, async () => {
@@ -217,7 +303,7 @@ test('CONTEXT-005：原生追加整批校验、活动互斥及提交失败重启
           type: 'message',
           role: 'user',
           content: [
-            { type: 'input_image', image_url: `data:image/png;base64,${png}`, detail: 'high' },
+            { type: 'input_image', image_url: `data:image/png;base64,${png}`, detail: 'unknown' },
           ],
         },
       ],
