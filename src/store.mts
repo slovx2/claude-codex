@@ -8,6 +8,7 @@ import { type HookEvent, type HookRun, hookItem } from './hook-lifecycle.mjs'
 import type { ContextInjection } from './native-context.mjs'
 import { ProjectStore } from './project-store.mjs'
 import { ProtocolError, type ThreadRuntimeSettings } from './protocol-contract.mjs'
+import { QueueStore } from './queue-store.mjs'
 import type { ThreadAttachment } from './thread-attachments.mjs'
 import type { ThreadGoal } from './thread-goals.mjs'
 import type {
@@ -38,12 +39,14 @@ function openDatabase(path: string): DatabaseSync {
 export class SessionStore {
   private db: DatabaseSync
   readonly projects: ProjectStore
+  readonly queue: QueueStore
 
   constructor(path = join(adapterHome(), 'state.sqlite')) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
     this.db = openDatabase(path)
     this.migrate()
     this.projects = new ProjectStore(this.db)
+    this.queue = new QueueStore(this.db)
   }
 
   private migrate(): void {
@@ -888,7 +891,12 @@ export class SessionStore {
     return turn
   }
 
-  saveSubmission(turn: TurnRecord, messageId: string | null, hash: string): void {
+  saveSubmission(
+    turn: TurnRecord,
+    messageId: string | null,
+    hash: string,
+    queuedId?: string,
+  ): void {
     this.db.exec('BEGIN IMMEDIATE')
     try {
       this.upsertTurn(turn)
@@ -896,6 +904,11 @@ export class SessionStore {
         this.db
           .prepare('INSERT INTO submissions VALUES (?,?,?,?)')
           .run(turn.threadId, messageId, hash, turn.id)
+      if (queuedId) {
+        const user = turn.items.find((item) => item.type === 'userMessage')
+        if (!messageId || user?.type !== 'userMessage') throw new Error('队列回合缺少用户输入身份')
+        this.queue.consume(turn.threadId, queuedId, messageId, user.content)
+      }
       this.db.exec('COMMIT')
     } catch (error) {
       this.db.exec('ROLLBACK')
@@ -993,6 +1006,7 @@ export class SessionStore {
         'goal_ledgers',
         'thread_usage',
         'thread_attachments',
+        'queued_submissions',
         'project_threads',
         'live_project_threads',
       ])

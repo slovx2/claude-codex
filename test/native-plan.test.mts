@@ -301,13 +301,11 @@ for (const decision of ['accept', 'decline', 'cancel', 'full-access']) {
         return { decision }
       }
       model.enqueue(() => [tool('Write', 'toolu_write', { file_path: path, content: 'approved' })])
-      model.enqueue((request) => {
-        assert.equal(
-          result(request, 'toolu_write').is_error === true,
-          decision === 'decline' || decision === 'cancel',
-        )
-        return [{ type: 'text', text: '完成' }]
-      })
+      if (decision !== 'cancel')
+        model.enqueue((request) => {
+          assert.equal(result(request, 'toolu_write').is_error === true, decision === 'decline')
+          return [{ type: 'text', text: '完成' }]
+        })
       const { thread } = await client.request('thread/start', {
         cwd: home,
         sandbox: 'danger-full-access',
@@ -317,7 +315,10 @@ for (const decision of ['accept', 'decline', 'cancel', 'full-access']) {
         threadId: thread.id,
         input: [{ type: 'text', text: '写入文件' }],
       })
-      assert.equal((await client.completed(turn.id)).status, 'completed')
+      assert.equal(
+        (await client.completed(turn.id)).status,
+        decision === 'cancel' ? 'interrupted' : 'completed',
+      )
       assert.equal(approvals, decision === 'full-access' ? 0 : 1)
       if (decision === 'accept' || decision === 'full-access')
         assert.equal(await readFile(path, 'utf8'), 'approved')

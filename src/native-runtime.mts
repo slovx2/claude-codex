@@ -678,7 +678,8 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         matchedAskRule?: unknown
       },
     ): Promise<
-      { behavior: 'allow'; updatedInput?: unknown } | { behavior: 'deny'; message: string }
+      | { behavior: 'allow'; updatedInput?: unknown }
+      | { behavior: 'deny'; message: string; interrupt?: boolean }
     > => {
       const toolUseId = options.toolUseID || `tool-${newId()}`
       const pending = this.turns.get(context.turnId)
@@ -807,7 +808,11 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         }
         return { behavior: 'allow', updatedInput: decision.updatedInput ?? input }
       }
-      return { behavior: 'deny', message: 'denied by user' }
+      return {
+        behavior: 'deny',
+        message: 'denied by user',
+        interrupt: decision.decision === 'cancel',
+      }
     }
   }
 

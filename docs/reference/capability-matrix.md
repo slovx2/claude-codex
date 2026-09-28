@@ -12,6 +12,7 @@ Agent SDK sidecar; runtime selection is pluggable. Status legend: **Supported**,
 | Remote transport | Supported | SSH starts `codex app-server --listen unix://` + `proxy`; the shim reports a Codex-compatible version/user agent. |
 | Thread lifecycle | Supported | start/resume/fork/archive/list/read + turn listing, backed by SQLite + Claude session ids. |
 | Normal chat | Supported | `turn/start` streams Claude text/reasoning into Codex agentMessage/reasoning items. |
+| 原生消息队列 | Supported | `thread/queue/add/list/update/delete/reorder/start` 持久化输入、顺序与消息身份；已加载线程自动执行，成功后继续消费，中断或失败后暂停。重启只读不执行，显式 resume/start 才恢复。领取与回合账本同事务，已消费或删除的消息 ID 不得重新入队。 |
 | Steering / interrupt | Supported | `turn/steer` and `turn/interrupt` route to the active Claude client. |
 | Token usage | Supported | SDK ResultMessage usage → TokenUsageBreakdown, pushed as `thread/tokenUsage/updated` (cumulative + last turn). |
 

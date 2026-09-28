@@ -117,6 +117,7 @@ import { PINNED_SECTION_ID, type SessionStore } from './store.mjs'
 import { threadAttachmentRequest } from './thread-attachments.mjs'
 import type { ThreadGoal } from './thread-goals.mjs'
 import { patchGitInfo } from './thread-metadata.mjs'
+import { threadQueueRequest } from './thread-queue.mjs'
 import { threadTimelineList } from './thread-timeline.mjs'
 import { parseTurnSettings } from './turn-settings.mjs'
 import type {
@@ -230,6 +231,7 @@ export class CodexClaudeAppServer {
   private peerFeatures = new WeakMap<RpcPeer, PeerFeatures>()
   private activeTurnByThread = new Map<string, string>()
   private scheduledGoals = new Map<string, string>()
+  private scheduledQueues = new Map<string, string>()
   private goalUsageLimited = new Set<string>()
   private get goals(): GoalController {
     return new GoalController(this.store)
@@ -321,6 +323,7 @@ export class CodexClaudeAppServer {
     // 先同步通知仍连接的客户端审批已失效，再抑制退出过程中的其他事件。
     this.pendingInteractions.close()
     this.stopped = true
+    this.scheduledQueues.clear()
     this.permissionSessionGrants.clear()
     this.mcpOAuth.close()
     await this.mcp.close()
@@ -341,6 +344,7 @@ export class CodexClaudeAppServer {
     return (
       this.activeTurnByThread.size > 0 ||
       this.scheduledGoals.size > 0 ||
+      this.scheduledQueues.size > 0 ||
       this.nativeMutations.size > 0
     )
   }
@@ -374,6 +378,7 @@ export class CodexClaudeAppServer {
       'thread/compact/start',
       'thread/settings/update',
       'turn/start',
+      'thread/queue/start',
       'review/start',
     ].includes(request.method)
     const nativeMutation =
@@ -597,6 +602,22 @@ export class CodexClaudeAppServer {
         return this.threadArchive(peer, asRecord(params), true)
       case 'thread/unsubscribe':
         return this.threadUnsubscribe(peer, asRecord(params))
+      case 'thread/queue/start':
+        return this.startQueuedTurn(peer, asRecord(params))
+      case 'thread/queue/add':
+      case 'thread/queue/list':
+      case 'thread/queue/update':
+      case 'thread/queue/delete':
+      case 'thread/queue/reorder': {
+        const value = asRecord(params)
+        const result = threadQueueRequest(this.store, method, value)
+        const threadId = requiredString(value.threadId, 'threadId')
+        if (result.changed) {
+          this.notify(peer, { method: 'thread/queue/changed', params: { threadId } })
+          if (method === 'thread/queue/add') this.scheduleQueue(threadId)
+        }
+        return result.result
+      }
       case 'thread/increment_elicitation':
         return this.threadAdjustElicitation(asRecord(params), 1)
       case 'thread/decrement_elicitation':
@@ -1011,6 +1032,7 @@ export class CodexClaudeAppServer {
     this.threadSettingsUpdate(peer, { threadId })
     this.bindPeerToDescendants(peer, threadId)
     this.goals.resume(threadId)
+    this.scheduleQueue(threadId)
     this.scheduleGoal(threadId)
     const usage = this.store.threadUsage(threadId)
     if (usage)
@@ -1412,6 +1434,7 @@ export class CodexClaudeAppServer {
   // elicitation counts) so an archived thread does not
   // leak entries for the lifetime of the process.
   private clearThreadState(threadId: string): void {
+    this.scheduledQueues.delete(threadId)
     this.commandSessionAllow.delete(threadId)
     this.permissionSessionGrants.delete(threadId)
     this.elicitationCounts.delete(threadId)
@@ -1570,6 +1593,10 @@ export class CodexClaudeAppServer {
         })
         return
       }
+      if (this.store.queue.list(threadId).length > 0) {
+        this.scheduleQueue(threadId)
+        return
+      }
       // 始终复用真实提交、SDK 会话和审批链路；不注入预制助手历史。
       void this.turnStart(peer, {
         threadId,
@@ -1582,6 +1609,74 @@ export class CodexClaudeAppServer {
           method: 'warning',
           params: { threadId, message: String(error) },
         })
+      })
+    })
+  }
+
+  private async startQueuedTurn(peer: RpcPeer, params: Record<string, unknown>): Promise<unknown> {
+    const threadId = requiredString(params.threadId, 'threadId')
+    const thread = this.store.getThread(threadId)
+    if (!thread) throw new ProtocolError(-32602, '未知会话')
+    if (thread.archived) throw new ProtocolError(-32600, '会话已归档')
+    const item =
+      params.queuedSubmissionId == null
+        ? this.store.queue.list(threadId)[0]
+        : this.store.queue.get(
+            threadId,
+            requiredString(params.queuedSubmissionId, 'queuedSubmissionId'),
+          )
+    if (!item) throw new ProtocolError(-32602, '待执行队列项不存在')
+    const result = await this.turnStart(
+      peer,
+      {
+        threadId,
+        input: item.input,
+        clientUserMessageId: item.clientUserMessageId,
+      },
+      item.id,
+    )
+    this.notify(peer, { method: 'thread/queue/changed', params: { threadId } })
+    return result
+  }
+
+  private scheduleQueue(threadId: string): void {
+    if (this.stopped || this.scheduledQueues.has(threadId)) return
+    const generation = newId()
+    this.scheduledQueues.set(threadId, generation)
+    setImmediate(() => {
+      if (this.scheduledQueues.get(threadId) !== generation) return
+      this.scheduledQueues.delete(threadId)
+      const peer = this.activePeerByThread.get(threadId)
+      const thread = this.store.getThread(threadId)
+      if (
+        !peer ||
+        !thread ||
+        thread.archived ||
+        this.stopped ||
+        this.activeTurnByThread.has(threadId) ||
+        this.interruptingByThread.has(threadId) ||
+        this.nativeMutations.has(threadId) ||
+        this.store.pendingContextInjection(threadId) ||
+        this.store.queue.list(threadId).length === 0
+      )
+        return
+      if (this.store.hasUncertainTools(threadId)) {
+        this.notifyThread(threadId, {
+          method: 'warning',
+          params: {
+            threadId,
+            message: '存在结果未确认的工具副作用，队列不能自动恢复。请先核对执行结果。',
+          },
+        })
+        return
+      }
+      // 使用普通提交的原子账本及执行链路，失败保留待办，不自动重试工具。
+      void this.startQueuedTurn(peer, { threadId }).catch((error) => {
+        if (!this.stopped)
+          this.notifyThread(threadId, {
+            method: 'warning',
+            params: { threadId, message: String(error) },
+          })
       })
     })
   }
@@ -2195,7 +2290,11 @@ export class CodexClaudeAppServer {
     }
   }
 
-  private async turnStart(peer: RpcPeer, params: Record<string, unknown>): Promise<unknown> {
+  private async turnStart(
+    peer: RpcPeer,
+    params: Record<string, unknown>,
+    queuedId?: string,
+  ): Promise<unknown> {
     const threadId = requiredString(params.threadId, 'threadId')
     const thread = this.store.getThread(threadId)
     if (!thread) throw new Error(`unknown thread: ${threadId}`)
@@ -2205,6 +2304,8 @@ export class CodexClaudeAppServer {
         : requiredString(params.clientUserMessageId, 'clientUserMessageId')
     const hash = submissionHash(params)
     if (messageId) {
+      if (!queuedId && this.store.queue.hasClient(threadId, messageId))
+        throw new ProtocolError(-32009, '消息 ID 已由队列管理，请通过队列操作')
       const submitted = this.store.submittedTurn(threadId, messageId, hash)
       if (submitted) return { turn: this.toLifecycleTurn(submitted) }
     }
@@ -2215,8 +2316,6 @@ export class CodexClaudeAppServer {
       this.store.listTurns(threadId).some((turn) => turn.status === 'inProgress')
     )
       throw new ProtocolError(-32009, '会话已有活动或结果尚未确认的 Turn')
-    this.activePeerByThread.set(threadId, peer)
-
     const turnId = newId()
     const input = Array.isArray(params.input) ? (params.input as UserInput[]) : []
     // extractImageInputs splits user input into the text prompt and any image
@@ -2290,7 +2389,8 @@ export class CodexClaudeAppServer {
       diff: '',
       error: null,
     }
-    this.store.saveSubmission(turn, messageId, hash)
+    this.store.saveSubmission(turn, messageId, hash, queuedId)
+    this.activePeerByThread.set(threadId, peer)
     if (params.outputSchema == null) this.goals.begin(threadId, turnId)
     recordRunEvent('turn.started', {
       threadId,
@@ -2306,6 +2406,17 @@ export class CodexClaudeAppServer {
 
     setImmediate(() => {
       this.notify(peer, { method: 'turn/started', params: { threadId, turn: publicTurn } })
+      if (queuedId) {
+        const item = initialItems[0]!
+        this.notify(peer, {
+          method: 'item/started',
+          params: { threadId, turnId, item, startedAtMs: nowMillis() },
+        })
+        this.notify(peer, {
+          method: 'item/completed',
+          params: { threadId, turnId, item, completedAtMs: nowMillis() },
+        })
+      }
       for (const item of imageItems) {
         this.notify(peer, {
           method: 'item/started',
@@ -4229,6 +4340,15 @@ export class CodexClaudeAppServer {
         this.setThreadStatus(peer, threadId, { type: 'active', activeFlags: [] })
     }
     const decision = normalizeDecision(response)
+    if (decision === 'cancel') {
+      // 取消意味着终止回合；先同步持久化中断，再异步等待 CLI 停止，避免权限回调互等。
+      void this.turnInterrupt(peer, { threadId, turnId }).catch((error) => {
+        this.notifyThread(threadId, {
+          method: 'warning',
+          params: { threadId, message: String(error) },
+        })
+      })
+    }
     return { decision }
   }
 
@@ -5305,6 +5425,9 @@ export class CodexClaudeAppServer {
       if (turn.status === 'interrupted' || turn.status === 'failed')
         this.finishAbortedItems(peer, stringOr(params.threadId, ''), completedId)
       this.activeItemsByTurn.delete(completedId)
+      const threadId = stringOr(params.threadId, '')
+      if (turn.status === 'completed') this.scheduleQueue(threadId)
+      else this.scheduledQueues.delete(threadId)
     }
     const target = this.peerForParams(peer, notification.params)
     debugLog('rpc.notify', {
