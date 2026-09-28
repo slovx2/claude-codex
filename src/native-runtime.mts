@@ -624,9 +624,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
             }
             if (event.tool_name !== 'EnterPlanMode' && event.tool_name !== 'ExitPlanMode') return {}
             const enabled = event.tool_name === 'EnterPlanMode'
-            await pending.query.setPermissionMode(
-              derivePermissionMode(enabled),
-            )
+            await pending.query.setPermissionMode(derivePermissionMode(enabled))
             context.planMode = enabled
             await pending.handlers.onEvent({ type: 'plan_mode', enabled })
             return {}
@@ -765,7 +763,9 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         (isFileEditTool(toolName) || (toolName === 'Bash' && originalBashInputs.has(toolUseId)))
       ) {
         const reason = deniedTool(context, toolName, input)
-        return reason ? { behavior: 'deny', message: reason } : { behavior: 'allow', updatedInput: input }
+        return reason
+          ? { behavior: 'deny', message: reason }
+          : { behavior: 'allow', updatedInput: input }
       }
       if (
         !allowsApproval(

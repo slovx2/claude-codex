@@ -44,7 +44,6 @@ test('server dispatch covers current Codex app-server client method surface', as
     'thread/unarchive',
     'thread/compact/start',
     'thread/shellCommand',
-    'thread/approveGuardianDeniedAction',
     'thread/backgroundTerminals/clean',
     'thread/rollback',
     'thread/list',

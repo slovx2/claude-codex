@@ -43,4 +43,12 @@ export const openAIOnlyRequests: ReadonlyArray<readonly [string, unknown]> = [
   ['userVerification/verify', { challenge: 'test', title: 'test', description: 'test' }],
   ['userVerification/cancel', { requestId: 'test' }],
   ['externalAgentConfig/import', { migrationItems: [] }],
+  ['externalAgentConfig/import/readHistories', null],
+  ['externalAgentConfig/import/recordHistory', { providerId: 'test', itemTypeResults: [] }],
+  [
+    'mcpServer/event/stream/start',
+    { threadId: 'test', server: 'test', name: 'test', subscriptionId: 'test', arguments: null },
+  ],
+  ['mcpServer/event/stream/stop', { subscriptionId: 'test' }],
+  ['thread/approveGuardianDeniedAction', { threadId: 'test', event: {} }],
 ]

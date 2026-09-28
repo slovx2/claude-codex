@@ -493,6 +493,12 @@ export class CodexClaudeAppServer {
         'userVerification/verify',
         'userVerification/cancel',
         'externalAgentConfig/import',
+        'externalAgentConfig/import/readHistories',
+        'externalAgentConfig/import/recordHistory',
+        // OpenAI 托管应用的 MCP 事件流与 Guardian 安全分类器，Claude 无对应物，不伪造确认。
+        'mcpServer/event/stream/start',
+        'mcpServer/event/stream/stop',
+        'thread/approveGuardianDeniedAction',
       ].includes(method)
     )
       throw new ProtocolError(-32004, `Claude 运行时不适用此能力: ${method}`)
@@ -685,22 +691,6 @@ export class CodexClaudeAppServer {
         return this.threadCompactStart(peer, asRecord(params))
       case 'thread/shellCommand':
         return this.threadShellCommand(peer, asRecord(params))
-      case 'thread/approveGuardianDeniedAction': {
-        // Codex App's "Guardian" is an OpenAI-side pre-tool safety classifier
-        // that can deny a tool call before it reaches the runtime. Claude
-        // Code has no equivalent — every denial in our pipeline already
-        // routes through the canUseTool round-trip, which the user resolves
-        // directly via the standard approval modal. There is no separate
-        // guardian-denied action to retry. We log the event (for parity
-        // debugging) and ack with the schema-correct {} response.
-        const evt = asRecord(params).event
-        debugLog('thread.approveGuardianDeniedAction', {
-          threadId: stringOr(asRecord(params).threadId, ''),
-          eventType:
-            evt && typeof evt === 'object' ? ((evt as Record<string, unknown>).type ?? null) : null,
-        })
-        return {}
-      }
       case 'thread/backgroundTerminals/clean':
         return this.threadBackgroundTerminalsClean(asRecord(params))
       case 'thread/rollback':
