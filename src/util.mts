@@ -163,16 +163,29 @@ export function codexUserAgent(clientName: string, clientVersion: string): strin
   return `${name}/${codexCompatVersion()} (${platformOs()}; ${cpu}) ${originator} (${name}; ${version})`
 }
 
+const unavailableFileImagePrompt =
+  '[图片内容不可用：当前运行时无法解析 fileId 附件。请勿推测图片内容；可继续处理正文。]'
+
 export function textFromInput(input: unknown): string {
   if (!Array.isArray(input)) return ''
   return input
     .map((item) => {
       if (!item || typeof item !== 'object') return ''
-      const value = item as { type?: string; text?: string; path?: string; name?: string }
+      const value = item as {
+        type?: string
+        text?: string
+        path?: string
+        name?: string
+        url?: string
+        fileId?: string
+      }
       if (value.type === 'text') return value.text ?? ''
       if (value.type === 'mention') return `@${value.path ?? value.name ?? ''}`
       if (value.type === 'localImage') return `[local image: ${value.path ?? ''}]`
-      if (value.type === 'image') return `[image]`
+      if (value.type === 'image')
+        return typeof value.url !== 'string' && typeof value.fileId === 'string'
+          ? unavailableFileImagePrompt
+          : '[image]'
       if (value.type === 'skill') return `/${value.name ?? 'skill'}`
       return ''
     })
@@ -197,7 +210,14 @@ export function extractImageInputs(input: unknown): ImageExtractResult {
   const images: ImageInput[] = []
   for (const raw of input) {
     if (!raw || typeof raw !== 'object') continue
-    const item = raw as { type?: string; text?: string; path?: string; name?: string; url?: string }
+    const item = raw as {
+      type?: string
+      text?: string
+      path?: string
+      name?: string
+      url?: string
+      fileId?: string
+    }
     if (item.type === 'text' && typeof item.text === 'string') texts.push(item.text)
     else if (item.type === 'mention') texts.push(`@${item.path ?? item.name ?? ''}`)
     else if (item.type === 'skill') texts.push(`/${item.name ?? 'skill'}`)
@@ -209,6 +229,9 @@ export function extractImageInputs(input: unknown): ImageExtractResult {
       const img = parseImageUrl(item.url)
       if (img) images.push(img)
       else texts.push('[image]')
+    } else if (item.type === 'image' && typeof item.fileId === 'string') {
+      // fileId 是上游存储标识，不能当成本地路径或 URL，也不能静默丢掉图片。
+      texts.push(unavailableFileImagePrompt)
     }
   }
   return { textPrompt: texts.filter(Boolean).join('\n'), images }

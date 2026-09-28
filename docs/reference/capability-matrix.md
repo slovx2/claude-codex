@@ -120,6 +120,10 @@ codex.
 
 ## Robustness notes
 
+- `image.fileId` 保留在会话历史中。当前不能解析上游图片内容时，向模型明确传递不可读提示，
+  正文及后续回合继续执行；纯文本提取（含 steer/恢复路径）使用同一提示。
+  标识不能解释为本地路径或下载 URL。`native-image-reference.test.mts` 用真实 SDK/CLI
+  验证提示实际进入模型请求以及重启保留原始附件；这是降级行为，图片下载能力仍未实现。
 - `turn/settings/update` 通过 SDK 的 `applyFlagSettings` 实际更新当前回合的模型和 effort，
   不写用户配置或未来回合的线程设置；启动边界等待原生CLI就绪，错配或已结束目标返回
   `targetUnavailable`。TURNSETTINGS-001/002 验证实际模型HTTP参数、其他会话隔离和重启后的默认值。

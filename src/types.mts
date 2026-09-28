@@ -152,7 +152,7 @@ export interface TurnRecord {
 
 export type UserInput =
   | { type: 'text'; text: string; text_elements?: unknown[] }
-  | { type: 'image'; url: string }
+  | ({ type: 'image' } & ({ url: string } | { fileId: string }))
   | { type: 'localImage'; path: string }
   | { type: 'skill'; name: string; path: string }
   | { type: 'mention'; name: string; path: string }
