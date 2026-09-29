@@ -43,10 +43,10 @@ if (!process.env.ANTHROPIC_BETAS) {
 // installed via optionalDependencies.
 
 import type { OnElicitation, Query } from '@anthropic-ai/claude-agent-sdk'
-import { Ajv } from 'ajv'
 import { type ApprovalPolicy, allowsApproval, toolApprovalFlow } from './approval-policy.mjs'
 import { dynamicToolServer } from './dynamic-tools.mjs'
 import { goalToolServer, isGoalTool } from './goal-tools.mjs'
+import { jsonSchemaValidator } from './json-schema.mjs'
 import { sdkMcpStartupEnvironment } from './mcp-config.mjs'
 import { appendNativeContext, type ContextInjection } from './native-context.mjs'
 import { NativeMcpBridge } from './native-mcp-bridge.mjs'
@@ -1677,9 +1677,8 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       try {
         if (message.structured_output === undefined) throw new Error('SDK 未返回 structured_output')
         const format = pending.context.outputFormat as Record<string, unknown>
-        const validate = new Ajv({ strict: false, validateFormats: false }).compile(
-          format.schema as Record<string, unknown>,
-        )
+        const schema = format.schema as Record<string, unknown>
+        const validate = jsonSchemaValidator(schema, { validateFormats: false }).compile(schema)
         if (!validate(message.structured_output))
           throw new Error('SDK 结构化结果不符合 outputSchema')
         structuredText = JSON.stringify(message.structured_output)

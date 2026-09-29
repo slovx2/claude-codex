@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { Ajv } from 'ajv'
+import type { ValidateFunction } from 'ajv'
 import { dynamicToolResult } from './dynamic-tool-result.mjs'
+import { jsonSchemaValidator } from './json-schema.mjs'
 import { ProtocolError, requiredString } from './protocol-contract.mjs'
 import type { RuntimeHandlers } from './types.mjs'
 
@@ -19,8 +20,7 @@ export function dynamicToolServer(
   callIdentity: (name: string, args: unknown) => string,
 ) {
   const tools = new Map<string, DynamicTool>()
-  const validator = new Ajv({ strict: false, allErrors: true })
-  const schemas = new Map<string, ReturnType<typeof validator.compile>>()
+  const schemas = new Map<string, ValidateFunction>()
   const flattened = raw.flatMap((value) => {
     if (!value || typeof value !== 'object') throw new ProtocolError(-32602, '工具定义无效')
     const spec = value as Record<string, unknown>
@@ -46,7 +46,10 @@ export function dynamicToolServer(
       .slice(0, 40)}`
     if (tools.has(name)) throw new ProtocolError(-32602, '重复工具定义')
     tools.set(name, tool)
-    schemas.set(name, validator.compile(tool.inputSchema))
+    schemas.set(
+      name,
+      jsonSchemaValidator(tool.inputSchema, { allErrors: true }).compile(tool.inputSchema),
+    )
   }
   const config = createSdkMcpServer({ name: 'tyrs_hand', version: '1.0.0' })
   config.instance.server.registerCapabilities({ tools: {} })

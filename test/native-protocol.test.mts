@@ -435,7 +435,9 @@ test('TOOLS-001：真实 SDK 动态工具声明、回调、文件副作用和模
               type: 'function',
               name: 'write_fixture',
               description: '测试：写入临时文件',
+              // Codex Desktop 下发的动态工具声明 2020-12 草案。
               inputSchema: {
+                $schema: 'https://json-schema.org/draft/2020-12/schema',
                 type: 'object',
                 properties: { text: { type: 'string' } },
                 required: ['text'],
