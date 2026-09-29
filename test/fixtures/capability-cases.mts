@@ -5,6 +5,7 @@ export const openAIOnlyRequests: ReadonlyArray<readonly [string, unknown]> = [
   ['account/logout', null],
   ['account/usage/read', null],
   ['account/workspaceMessages/read', null],
+  ['remoteControl/status/read', null],
   ['account/rateLimitResetCredit/consume', { idempotencyKey: 'test-reset' }],
   ['account/sendAddCreditsNudgeEmail', { creditType: 'credits' }],
   ['feedback/upload', { classification: 'test', includeLogs: false }],

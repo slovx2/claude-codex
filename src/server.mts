@@ -69,7 +69,9 @@ import {
   emptyTokenBreakdown,
   fileChangeFromTool,
   gitDiff,
+  gitTurnDiff,
   gitUntrackedDiff,
+  gitWorktreeTree,
   hasLegacyPermissionParams,
   isGitWorkTree,
   isNotAGitRepo,
@@ -472,6 +474,7 @@ export class CodexClaudeAppServer {
         'account/rateLimitResetCredit/consume',
         'account/usage/read',
         'account/workspaceMessages/read',
+        'remoteControl/status/read',
         'feedback/upload',
         'attestation/generate',
         'environment/add',
@@ -2596,6 +2599,8 @@ export class CodexClaudeAppServer {
     let hasTextOutput = false
     const noticesSeen = new Set<string>()
     const commandOutputSeen = new Set<string>()
+    // 回合开始前的工作区即 diff 基线，既有未提交改动与此前回合的结果都不属于本回合。
+    const diffBase = await gitWorktreeTree(thread.cwd)
     // MultiAgent V2 uses subAgentActivity for display/liveness and the
     // spawnAgent/wait tool calls for the structured timeline. A naturally
     // completed child is not closed again: wait/completed must remain the last
@@ -3675,7 +3680,7 @@ export class CodexClaudeAppServer {
                 method: 'item/completed',
                 params: { threadId: thread.id, turnId: turn.id, item, completedAtMs: nowMillis() },
               })
-            const diff = await gitDiff(thread.cwd)
+            const diff = await gitTurnDiff(thread.cwd, diffBase)
             if (this.store.getTurn(turn.id)?.status !== 'inProgress') return
             if (diff) {
               this.store.updateTurnDiff(turn.id, diff)
@@ -4002,7 +4007,7 @@ export class CodexClaudeAppServer {
     const currentTurn = this.store.getTurn(turn.id)
     if (currentTurn && currentTurn.status !== 'inProgress') return
 
-    const finalDiff = await gitDiff(thread.cwd)
+    const finalDiff = await gitTurnDiff(thread.cwd, diffBase)
     if (this.stopped) return
     if (this.store.getTurn(turn.id)?.status !== 'inProgress') return
     if (finalDiff) {

@@ -1,6 +1,8 @@
 import { type ChildProcess, execFile, spawn } from 'node:child_process'
 import { type FSWatcher, readFileSync, watch, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { copyFile, mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { ApprovalPolicy } from './approval-policy.mjs'
 import { ProtocolError, pageRecords, submissionHash } from './protocol-contract.mjs'
@@ -884,6 +886,63 @@ export async function isGitWorkTree(cwd: string): Promise<boolean> {
   }
   gitRepoCache.set(cwd, inside)
   return inside
+}
+
+// 回合 diff 只能包含本回合的改动：开始时把工作区（含未跟踪文件，遵守忽略规则）写入临时索引得到基线树，
+// 之后与当前工作区树比较。真实索引只被复制作为 stat 缓存，不会被修改；与 Codex Desktop 的回合 diff 捕获方式一致。
+export async function gitWorktreeTree(cwd: string): Promise<string | null> {
+  if (!(await isGitWorkTree(cwd))) return null
+  const directory = await mkdtemp(join(tmpdir(), 'claude-codex-index-'))
+  const index = join(directory, 'index')
+  const git = (args: string[]) =>
+    execFileAsync('git', args, {
+      cwd,
+      env: { ...process.env, GIT_INDEX_FILE: index },
+      timeout: 10_000,
+      maxBuffer: 1024 * 1024,
+    })
+  try {
+    const { stdout: realIndex } = await execFileAsync('git', ['rev-parse', '--git-path', 'index'], {
+      cwd,
+      timeout: 3_000,
+      maxBuffer: 64 * 1024,
+    })
+    await copyFile(resolve(cwd, realIndex.trim()), index).catch(() => undefined)
+    await git(['add', '-A', '--', '.'])
+    return (await git(['write-tree'])).stdout.trim() || null
+  } catch (error) {
+    debugLog('git.snapshot.failed', {
+      cwd,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return null
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+}
+
+export async function gitTurnDiff(cwd: string, base: string | null): Promise<string> {
+  if (!base) return ''
+  const current = await gitWorktreeTree(cwd)
+  if (!current) return ''
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['diff', '--no-ext-diff', '--no-color', base, current, '--'],
+      {
+        cwd,
+        timeout: 10_000,
+        maxBuffer: 5 * 1024 * 1024,
+      },
+    )
+    return stdout
+  } catch (error) {
+    debugLog('git.turnDiff.failed', {
+      cwd,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return ''
+  }
 }
 
 export async function gitDiff(cwd: string): Promise<string> {

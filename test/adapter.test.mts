@@ -4339,12 +4339,16 @@ test('file change approval emits patch and git diff updates', { timeout: 15_000 
   execFileSync('mkdir', ['-p', repo])
   execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
   await writeFile(join(repo, 'README.md'), 'hello\n')
-  execFileSync('git', ['add', 'README.md'], { cwd: repo })
+  await writeFile(join(repo, 'tracked.md'), 'committed\n')
+  execFileSync('git', ['add', 'README.md', 'tracked.md'], { cwd: repo })
   execFileSync(
     'git',
     ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'],
     { cwd: repo, stdio: 'ignore' },
   )
+  // 回合开始前已存在的未提交改动与未跟踪文件不属于本回合，不能进入回合 diff。
+  await writeFile(join(repo, 'tracked.md'), 'PRE_EXISTING_CHANGE\n')
+  await writeFile(join(repo, 'untracked.txt'), 'PRE_EXISTING_UNTRACKED\n')
 
   const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -4401,6 +4405,11 @@ test('file change approval emits patch and git diff updates', { timeout: 15_000 
     }
     assert.match(diff, /README.md/)
     assert.match(diff, /changed by mock runtime/)
+    assert.doesNotMatch(diff, /tracked\.md|untracked\.txt|PRE_EXISTING/)
+    assert.equal(
+      execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: repo, encoding: 'utf8' }),
+      '',
+    )
   } finally {
     await stopProcess(proc)
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 80 })
