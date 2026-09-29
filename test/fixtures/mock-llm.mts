@@ -162,7 +162,8 @@ export class MockLLM {
       }
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
       this.event(res, 'message_start', { message: { ...message, content: [], stop_reason: null } })
-      content.forEach((item, index) => {
+      // pauseAfterMs 只影响流式时序（模拟模型持续思考），不会写入发回的内容块。
+      for (const [index, item] of content.entries()) {
         const block =
           item.type === 'text'
             ? { type: 'text', text: '' }
@@ -178,7 +179,9 @@ export class MockLLM {
               : { type: 'input_json_delta', partial_json: JSON.stringify(item.input) }
         this.event(res, 'content_block_delta', { index, delta })
         this.event(res, 'content_block_stop', { index })
-      })
+        if (typeof item.pauseAfterMs === 'number')
+          await new Promise((resolve) => setTimeout(resolve, item.pauseAfterMs as number))
+      }
       this.event(res, 'message_delta', {
         delta: { stop_reason: stop, stop_sequence: null },
         usage: message.usage,
