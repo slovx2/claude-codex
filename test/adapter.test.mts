@@ -1101,7 +1101,7 @@ test('Codex app config payload model and effort map into Claude runtime context'
     assert.equal(text, 'model=haiku effort=xhigh')
   } finally {
     proc.kill()
-    await rm(home, { recursive: true, force: true })
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 80 })
   }
 })
 

@@ -827,8 +827,21 @@ export function fileChangeFromTool(
   }
   const path = String(input.file_path ?? input.path ?? input.filename ?? 'unknown')
   if (toolName === 'Write') {
+    // 与原生 Codex 一致：新建文件的 diff 就是完整内容（客户端按行计为新增）；覆盖已有文件是更新，给出统一 diff。
+    const content = String(input.content ?? '')
+    let previous: string | null = null
+    try {
+      previous = readFileSync(path, 'utf8')
+    } catch {
+      previous = null
+    }
+    if (previous === null) return [{ path, kind: { type: 'add' }, diff: content }]
     return [
-      { path, kind: { type: 'add' }, diff: simpleDiff(path, '', String(input.content ?? '')) },
+      {
+        path,
+        kind: { type: 'update', move_path: null },
+        diff: simpleDiff(path, previous, content),
+      },
     ]
   }
   return [
