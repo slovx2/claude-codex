@@ -28,12 +28,12 @@ test('EVENTS-009：真实推理增量与历史一致，删除通知覆盖已加�
       })
       assert.equal((await client.completed(turn.id)).status, 'completed')
       const events = client.trace.filter((event) => event.params?.turnId === turn.id)
-      const deltas = events.filter((event) => event.method === 'item/reasoning/textDelta')
+      const deltas = events.filter((event) => event.method === 'item/reasoning/summaryTextDelta')
       assert.equal(deltas.length, 2)
       assert.equal(deltas.map((event) => event.params.delta).join(''), 'MOCK_REASONING_A_B')
       const itemId = deltas[0].params.itemId
       assert.ok(
-        deltas.every((event) => event.params.itemId === itemId && event.params.contentIndex === 0),
+        deltas.every((event) => event.params.itemId === itemId && event.params.summaryIndex === 0),
       )
       const starts = events.filter(
         (event) => event.method === 'item/started' && event.params.item.id === itemId,
@@ -45,7 +45,12 @@ test('EVENTS-009：真实推理增量与历史一致，删除通知覆盖已加�
       assert.equal(ends.length, 1)
       assert.ok(events.indexOf(starts[0]) < events.indexOf(deltas[0]))
       assert.ok(events.indexOf(ends[0]) > events.indexOf(deltas.at(-1)))
-      assert.deepEqual(ends[0].params.item.content, ['MOCK_REASONING_A_B'])
+      assert.deepEqual(ends[0].params.item.summary, ['MOCK_REASONING_A_B'])
+      assert.deepEqual(ends[0].params.item.content, [])
+      assert.equal(events.filter((event) => event.method === 'item/reasoning/textDelta').length, 0)
+      const parts = events.filter((event) => event.method === 'item/reasoning/summaryPartAdded')
+      assert.equal(parts.length, 1)
+      assert.ok(events.indexOf(parts[0]) < events.indexOf(deltas[0]))
       const before = await client.request('thread/read', {
         threadId: thread.id,
         includeTurns: true,

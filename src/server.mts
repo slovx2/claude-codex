@@ -2675,11 +2675,12 @@ export class CodexClaudeAppServer {
     const ensureReasoningItem = (): string => {
       if (reasoningItemId) return reasoningItemId
       reasoningItemId = newId()
+      // Claude 的 thinking 本身就是面向用户的思考摘要：按推理摘要下发，桌面与手机才会像原生模型一样展示（用户 2026-09-29 决定）。
       const item: ThreadItem = {
         type: 'reasoning',
         id: reasoningItemId,
         summary: [],
-        content: [''],
+        content: [],
       }
       this.store.appendItem(turn.id, item)
       this.notify(peer, {
@@ -3534,23 +3535,27 @@ export class CodexClaudeAppServer {
             if (event.delta.length === 0) return
             completeAgentItem('commentary')
             const itemId = ensureReasoningItem()
+            const current = this.store.getTurn(turn.id)?.items.find((item) => item.id === itemId)
+            const firstPart = current?.type === 'reasoning' && current.summary.length === 0
             this.store.updateItem(turn.id, itemId, (item) => {
               if (item.type === 'reasoning') {
-                return {
-                  ...item,
-                  content: [(item.content[0] ?? '') + event.delta],
-                }
+                return { ...item, summary: [(item.summary[0] ?? '') + event.delta] }
               }
               return item
             })
+            if (firstPart)
+              this.notify(peer, {
+                method: 'item/reasoning/summaryPartAdded',
+                params: { threadId: thread.id, turnId: turn.id, itemId, summaryIndex: 0 },
+              })
             this.notify(peer, {
-              method: 'item/reasoning/textDelta',
+              method: 'item/reasoning/summaryTextDelta',
               params: {
                 threadId: thread.id,
                 turnId: turn.id,
                 itemId,
                 delta: event.delta,
-                contentIndex: 0,
+                summaryIndex: 0,
               },
             })
             return

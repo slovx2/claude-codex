@@ -239,10 +239,10 @@ test('reasoning appears once and completes before visible prose', async () => {
   )
   const reasoning = turn.items.find((item) => item.type === 'reasoning')
   assert.equal(reasoning?.type, 'reasoning')
-  assert.deepEqual(reasoning.summary, [])
-  assert.deepEqual(reasoning.content, ['Think carefully.'])
+  assert.deepEqual(reasoning.summary, ['Think carefully.'])
+  assert.deepEqual(reasoning.content, [])
   assert.equal(
-    messages.some((message) => message.method === 'item/reasoning/summaryTextDelta'),
+    messages.some((message) => message.method === 'item/reasoning/textDelta'),
     false,
   )
   const reasoningDone = messages.findIndex(

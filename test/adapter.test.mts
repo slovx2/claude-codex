@@ -2267,7 +2267,7 @@ test('review/start and thread/compact/start emit real turn items', async () => {
   }
 })
 
-test('Claude thinking maps to Codex reasoning content without a duplicate summary', async () => {
+test('Claude thinking maps to a Codex reasoning summary without duplicate raw content', async () => {
   const home = await mkdtemp(join(tmpdir(), 'claude-codex-test-'))
   const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -2305,10 +2305,11 @@ test('Claude thinking maps to Codex reasoning content without a duplicate summar
         completedReasoning = message.params.item
       if (message.method === 'turn/completed') break
     }
-    assert.equal(sawSummary, false)
-    assert.equal(sawContent, true)
-    assert.deepEqual(completedReasoning.summary, [])
-    assert.deepEqual(completedReasoning.content, ['mock thinking'])
+    // 客户端只展示推理摘要：Claude thinking 须以摘要下发，且不重复作为原始内容。
+    assert.equal(sawSummary, true)
+    assert.equal(sawContent, false)
+    assert.deepEqual(completedReasoning.summary, ['mock thinking'])
+    assert.deepEqual(completedReasoning.content, [])
   } finally {
     proc.kill()
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 80 })
