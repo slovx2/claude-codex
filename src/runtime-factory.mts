@@ -14,6 +14,7 @@ import type {
   ClaudeRuntime,
   NativeModelInfo,
   NativeSessionFork,
+  RuntimeBackgroundShell,
   RuntimeHandlers,
   RuntimeTurnContext,
 } from './types.mjs'
@@ -113,6 +114,15 @@ class SelectableRuntime implements ClaudeRuntime {
     if (!runtime.updateTurnSettings)
       throw new ProtocolError(-32004, '当前运行时不支持真实回合设置更新')
     return runtime.updateTurnSettings(threadId, turnId, settings)
+  }
+
+  listBackgroundShells(threadId: string): RuntimeBackgroundShell[] {
+    return this.activeRuntimeByThread.get(threadId)?.listBackgroundShells?.(threadId) ?? []
+  }
+
+  async stopBackgroundShell(threadId: string, taskId: string): Promise<boolean> {
+    const runtime = this.activeRuntimeByThread.get(threadId)
+    return (await runtime?.stopBackgroundShell?.(threadId, taskId)) ?? false
   }
 
   async steer(threadId: string, prompt: string): Promise<void> {

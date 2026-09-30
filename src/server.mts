@@ -1,10 +1,14 @@
-import { type ChildProcess, execFile, spawn } from 'node:child_process'
+import { type ChildProcess, spawn } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { promisify } from 'node:util'
 import { allowsApproval } from './approval-policy.mjs'
+import {
+  backgroundTerminals,
+  type ListedBackgroundTerminal,
+  paginateBackgroundTerminals,
+} from './background-terminals.mjs'
 import { buildInfo } from './build-info.mjs'
 import { catalogPagination } from './catalog-pagination.mjs'
 import { listClaudeHooks } from './claude-capabilities.mjs'
@@ -18,7 +22,8 @@ import {
 import { dynamicToolResult } from './dynamic-tool-result.mjs'
 import { experimentalFeatureList, experimentalFeatureSet } from './experimental-features.mjs'
 import { FilesystemRpc } from './filesystem-rpc.mjs'
-import { fuzzyPathMatch } from './fuzzy-search.mjs'
+import { FuzzyFileSearch, FuzzySearchSessions } from './fuzzy-session.mjs'
+import { gitDiffToRemote as computeGitDiffToRemote } from './git-diff-remote.mjs'
 import { GoalController } from './goal-controller.mjs'
 import { readMcpConfig } from './mcp.mjs'
 import { sdkMcpServers } from './mcp-config.mjs'
@@ -68,7 +73,6 @@ import {
   defaultSelectableModelId,
   emptyTokenBreakdown,
   fileChangeFromTool,
-  gitDiff,
   gitTurnDiff,
   gitUntrackedDiff,
   gitWorktreeTree,
@@ -77,7 +81,6 @@ import {
   isNotAGitRepo,
   isSelectableModel,
   isSubagentToolName,
-  listFiles,
   loadRuntimeModelCatalog,
   modelFromParams,
   normalizeApprovalPolicy,
@@ -170,8 +173,6 @@ import {
 import { parseWorkflowCommand } from './workflow-command.mjs'
 import { maybeCreateThreadWorktree } from './worktree.mjs'
 
-const execFileAsync = promisify(execFile)
-
 // A missing Claude Task result must not keep Codex cc in its working state
 // forever. This is deliberately a long, configurable watchdog for the whole
 // subagent phase; it is not the short journal-drain grace period used when a
@@ -251,7 +252,10 @@ export class CodexClaudeAppServer {
   >()
   private nativeMutations = new Set<string>()
   private subagentStateByTurn = new Map<string, ActiveSubagentState>()
-  private fuzzySessions = new Map<string, { roots: string[] }>()
+  private readonly fuzzySearch = new FuzzyFileSearch()
+  private readonly fuzzySessions = new FuzzySearchSessions((peer, message) =>
+    this.notify(peer, message),
+  )
   private commandSessionAllow = new Map<string, Set<string>>()
   // 与固定 Codex 一致：会话授权仅在当前 runtime 运行代内跨 Turn 有效。
   private permissionSessionGrants = new Map<string, PermissionOverlay>()
@@ -703,6 +707,10 @@ export class CodexClaudeAppServer {
         return this.threadShellCommand(peer, asRecord(params))
       case 'thread/backgroundTerminals/clean':
         return this.threadBackgroundTerminalsClean(asRecord(params))
+      case 'thread/backgroundTerminals/list':
+        return this.threadBackgroundTerminalsList(asRecord(params))
+      case 'thread/backgroundTerminals/terminate':
+        return this.threadBackgroundTerminalsTerminate(asRecord(params))
       case 'thread/rollback':
         return this.threadRollback(asRecord(params))
       case 'thread/revert':
@@ -885,13 +893,13 @@ export class CodexClaudeAppServer {
       case 'getAuthStatus':
         return { authMethod: null, authToken: null, requiresOpenaiAuth: false }
       case 'fuzzyFileSearch':
-        return this.fuzzyFileSearch(asRecord(params))
+        return this.fuzzySearch.search(asRecord(params))
       case 'fuzzyFileSearch/sessionStart':
-        return this.fuzzySessionStart(asRecord(params))
+        return this.fuzzySessions.start(peer, asRecord(params))
       case 'fuzzyFileSearch/sessionUpdate':
-        return this.fuzzySessionUpdate(peer, asRecord(params))
+        return this.fuzzySessions.update(peer, asRecord(params))
       case 'fuzzyFileSearch/sessionStop':
-        return this.fuzzySessionStop(peer, asRecord(params))
+        return this.fuzzySessions.stop(asRecord(params))
       default:
         throw new ProtocolError(-32601, `method not implemented: ${method}`)
     }
@@ -2014,12 +2022,53 @@ export class CodexClaudeAppServer {
     return {}
   }
 
+  // 与原生 load_thread 一致：会话必须存在且已加载（有连接订阅）。
+  private loadedThreadForTerminals(params: Record<string, unknown>): ThreadRecord {
+    const threadId = requiredString(params.threadId, 'threadId')
+    const thread = this.store.getThread(threadId)
+    if (!thread || !this.activePeerByThread.has(threadId))
+      throw new ProtocolError(-32600, `thread not found: ${threadId}`)
+    return thread
+  }
+
+  private listedBackgroundTerminals(thread: ThreadRecord): ListedBackgroundTerminal[] {
+    const turnId = this.activeTurnByThread.get(thread.id)
+    const items = turnId ? (this.store.getTurn(turnId)?.items ?? []) : []
+    return backgroundTerminals(
+      this.runtime.listBackgroundShells?.(thread.id) ?? [],
+      thread.cwd,
+      items,
+    )
+  }
+
+  private threadBackgroundTerminalsList(params: Record<string, unknown>): unknown {
+    const thread = this.loadedThreadForTerminals(params)
+    return paginateBackgroundTerminals(
+      this.listedBackgroundTerminals(thread).map((entry) => entry.terminal),
+      params.cursor,
+      params.limit,
+    )
+  }
+
+  private async threadBackgroundTerminalsTerminate(
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    const thread = this.loadedThreadForTerminals(params)
+    const processId = requiredString(params.processId, 'processId')
+    const entry = this.listedBackgroundTerminals(thread).find(
+      (listed) => listed.terminal.processId === processId,
+    )
+    if (!entry) return { terminated: false }
+    return {
+      terminated: (await this.runtime.stopBackgroundShell?.(thread.id, entry.taskId)) ?? false,
+    }
+  }
+
+  // 原生提交清理操作后立即返回，不等待终止完成。
   private threadBackgroundTerminalsClean(params: Record<string, unknown>): unknown {
-    debugLog('thread.backgroundTerminals.clean', {
-      threadId: stringOr(params.threadId, ''),
-      activeCommandProcesses: this.commandProcesses.size,
-      activeProcessHandles: this.processes.activeCount,
-    })
+    const thread = this.loadedThreadForTerminals(params)
+    for (const entry of this.listedBackgroundTerminals(thread))
+      void this.runtime.stopBackgroundShell?.(thread.id, entry.taskId)
     return {}
   }
 
@@ -5078,91 +5127,14 @@ export class CodexClaudeAppServer {
   }
 
   private async gitDiffToRemote(params: Record<string, unknown>): Promise<unknown> {
-    const cwd = stringOr(params.cwd, process.cwd())
-    const diff = await gitDiff(cwd)
-    let sha = ''
-    try {
-      const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd, timeout: 10_000 })
-      sha = stdout.trim()
-    } catch {}
-    return { sha, diff }
-  }
-
-  private async fuzzyFileSearch(params: Record<string, unknown>): Promise<unknown> {
-    const query = stringOr(params.query, '')
-    const roots = Array.isArray(params.roots) ? params.roots.map(String) : [process.cwd()]
-    return { files: await this.fuzzySearchCore(query, roots) }
-  }
-
-  private async fuzzySearchCore(
-    rawQuery: string,
-    roots: string[],
-  ): Promise<Array<Record<string, unknown>>> {
-    const files: Array<{
-      root: string
-      path: string
-      match_type: string
-      file_name: string
-      score: number
-      indices: number[]
-    }> = []
-    for (const root of roots) {
-      const paths = await listFiles(root)
-      for (const path of paths) {
-        const fileName = path.split('/').at(-1) ?? path
-        const match = fuzzyPathMatch(rawQuery, path)
-        if (!match) continue
-        files.push({
-          root,
-          path,
-          match_type: 'file',
-          file_name: fileName,
-          ...match,
-        })
-      }
-    }
-    return files
-      .sort(
-        (a, b) => b.score - a.score || a.path.localeCompare(b.path) || a.root.localeCompare(b.root),
+    const cwd = resolve(requiredString(params.cwd, 'cwd'))
+    const result = await computeGitDiffToRemote(cwd)
+    if (!result)
+      throw new ProtocolError(
+        -32600,
+        `failed to compute git diff to remote for cwd: ${JSON.stringify(cwd)}`,
       )
-      .slice(0, 100)
-  }
-
-  private fuzzySessionStart(params: Record<string, unknown>): unknown {
-    const sessionId = stringOr(params.sessionId, '')
-    const roots = Array.isArray(params.roots) ? params.roots.map(String) : [process.cwd()]
-    if (sessionId) this.fuzzySessions.set(sessionId, { roots })
-    return {}
-  }
-
-  private async fuzzySessionUpdate(
-    peer: RpcPeer,
-    params: Record<string, unknown>,
-  ): Promise<unknown> {
-    const sessionId = stringOr(params.sessionId, '')
-    const query = stringOr(params.query, '')
-    const session = this.fuzzySessions.get(sessionId)
-    const roots = session?.roots ?? [process.cwd()]
-    const files = await this.fuzzySearchCore(query, roots)
-    if (session && this.fuzzySessions.get(sessionId) === session) {
-      this.notify(peer, {
-        method: 'fuzzyFileSearch/sessionUpdated',
-        params: { sessionId, query, files },
-      })
-    }
-    return {}
-  }
-
-  private fuzzySessionStop(peer: RpcPeer, params: Record<string, unknown>): unknown {
-    const sessionId = stringOr(params.sessionId, '')
-    this.fuzzySessions.delete(sessionId)
-    if (sessionId) {
-      this.notify(peer, {
-        method: 'fuzzyFileSearch/sessionCompleted',
-        params: { sessionId },
-      })
-    }
-    return {}
+    return result
   }
 
   private toolUseToItem(

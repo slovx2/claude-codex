@@ -5,6 +5,7 @@ import type {
   ClaudeRuntime,
   NativeModelInfo,
   NativeSessionFork,
+  RuntimeBackgroundShell,
   RuntimeHandlers,
   RuntimeTurnContext,
 } from './types.mjs'
@@ -15,6 +16,7 @@ export class MockRuntime implements ClaudeRuntime {
     return { sessionId: `mock-${randomUUID()}`, messageIds: {} }
   }
   private interrupted = new Set<string>()
+  private shells = new Map<string, Map<string, RuntimeBackgroundShell>>()
 
   async runTurn(context: RuntimeTurnContext, handlers: RuntimeHandlers): Promise<void> {
     this.interrupted.delete(context.threadId)
@@ -28,6 +30,32 @@ export class MockRuntime implements ClaudeRuntime {
       type: 'session',
       claudeSessionId: context.claudeSessionId ?? `mock-${context.threadId}`,
     })
+
+    // 模拟两个后台 shell：回合保持进行，直到它们都被结束或回合被中断。
+    if (/mock background shells/i.test(context.prompt)) {
+      const shells = new Map<string, RuntimeBackgroundShell>()
+      this.shells.set(context.threadId, shells)
+      for (const [index, command] of ['sleep 101', 'sleep 102'].entries()) {
+        const toolUseId = `tool-bg-${index + 1}`
+        await handlers.onEvent({
+          type: 'tool_use',
+          toolUseId,
+          toolName: 'Bash',
+          input: { command, run_in_background: true },
+        })
+        shells.set(`mock-task-${index + 1}`, {
+          taskId: `mock-task-${index + 1}`,
+          toolUseId,
+          command,
+          seq: index,
+        })
+      }
+      while (shells.size && !this.interrupted.has(context.threadId))
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      this.shells.delete(context.threadId)
+      await handlers.onEvent({ type: 'completed', success: true })
+      return
+    }
 
     if (/approval|permission|bash/i.test(context.prompt)) {
       const toolUseId = `tool-${Date.now()}`
@@ -414,6 +442,14 @@ export class MockRuntime implements ClaudeRuntime {
   }
 
   async steer(_threadId: string, _prompt: string): Promise<void> {}
+
+  listBackgroundShells(threadId: string): RuntimeBackgroundShell[] {
+    return [...(this.shells.get(threadId)?.values() ?? [])].sort((a, b) => a.seq - b.seq)
+  }
+
+  async stopBackgroundShell(threadId: string, taskId: string): Promise<boolean> {
+    return this.shells.get(threadId)?.delete(taskId) ?? false
+  }
 
   // 与原生 supportedModels() 形状一致的固定目录，供不启动 CLI 的测试使用。
   async supportedModels(): Promise<NativeModelInfo[]> {

@@ -22,6 +22,28 @@ versioning or publishing metadata.
 - Kept compatibility-only account, plugin, marketplace, realtime, and other
   OpenAI-specific surfaces inert or schema-shaped where Claude Code has no
   equivalent.
+- Aligned `process/spawn` and `command/exec` with Codex 0.157.1: 10s default
+  timeout with exit code 124, immediate process-group SIGKILL on
+  kill/terminate/disconnect/timeout, 1 MiB per-stream output cap with
+  `capReached` on the truncating chunk, 2s post-exit output drain, native error
+  codes and messages, and the native non-inheritable environment filtering.
+  PTY sessions keep running through `scripts/pty-bridge.py` (handshake reports
+  spawn success or failure), which the packaged runtime now ships alongside a
+  `--pty-self-check` build gate.
+- Ported `gitDiffToRemote` from Codex 0.157.1 `git-utils`: the base is the
+  closest commit that also exists on a remote (current branch, default branch,
+  then remote branches containing HEAD), the diff includes unpushed commits and
+  untracked files, and a missing base is a -32600 error.
+- Aligned `fuzzyFileSearch` sessions with Codex: the tree is indexed once
+  (hidden entries, directories, symlinks followed, gitignore only inside git
+  repos), `sessionUpdate` responds before `sessionUpdated` + `sessionCompleted`,
+  stale queries are dropped, and `sessionStop` sends no completion. Unlike
+  Codex, notifications go to the connection that last started or updated the
+  session instead of every connection.
+- Implemented `thread/backgroundTerminals/list|terminate|clean` over the live
+  turn's background Bash tasks (`background_tasks_changed` / `stopTask`).
+  Background shells end with the per-turn CLI, and `processId` matches the Bash
+  item (`claude:<toolUseId>`) rather than a numeric OS pid.
 
 ### Provider and multi-agent boundaries
 

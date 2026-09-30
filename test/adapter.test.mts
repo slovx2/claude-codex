@@ -126,6 +126,9 @@ test('server dispatch covers current Codex app-server client method surface', as
     'fuzzyFileSearch/sessionStart',
     'fuzzyFileSearch/sessionUpdate',
     'fuzzyFileSearch/sessionStop',
+    'thread/backgroundTerminals/list',
+    'thread/backgroundTerminals/terminate',
+    'thread/backgroundTerminals/clean',
   ]
   const missing = methods.filter((method) => !source.includes(`case '${method}':`))
   assert.deepEqual(missing, [])
@@ -2183,13 +2186,14 @@ test('process/spawn supports argv, errors, and debug logs terminal lifecycle', a
       }),
     )
     const rejected = await reader.nextResponse(2)
-    assert.equal(rejected.error.code, -32000)
+    assert.equal(rejected.error.code, -32603)
+    assert.match(rejected.error.message, /^failed to spawn process: /)
     assert.match(rejected.error.message, /ENOENT|no such file/i)
 
     const logText = await readFile(debugLog, 'utf8')
     assert.match(logText, /"event":"process.spawn.start"/)
-    assert.match(logText, /"event":"process.spawn.close"/)
     assert.match(logText, /"event":"process.spawn.error"/)
+    assert.match(logText, /"event":"process.exit"/)
   } finally {
     proc.kill()
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 80 })
@@ -4422,19 +4426,39 @@ test('file change approval emits patch and git diff updates', { timeout: 15_000 
   }
 })
 
-test('gitDiffToRemote includes untracked files for Codex diff review', async () => {
+test('gitDiffToRemote 与 Codex 一致：以最近的远端基准比较，含未推送提交与未跟踪文件', async () => {
   const home = await mkdtemp(join(tmpdir(), 'claude-codex-test-'))
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', ...args], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  const origin = join(home, 'origin.git')
   const repo = join(home, 'repo')
-  execFileSync('mkdir', ['-p', repo])
-  execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
+  const lonely = join(home, 'lonely')
+  execFileSync('mkdir', ['-p', origin, repo, lonely])
+  git(origin, 'init', '--bare', '-b', 'main')
+  git(repo, 'init', '-b', 'main')
   await writeFile(join(repo, 'README.md'), 'hello\n')
-  execFileSync('git', ['add', 'README.md'], { cwd: repo })
-  execFileSync(
-    'git',
-    ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'init'],
-    { cwd: repo, stdio: 'ignore' },
-  )
+  git(repo, 'add', 'README.md')
+  git(repo, 'commit', '-m', 'init')
+  git(repo, 'remote', 'add', 'origin', origin)
+  git(repo, 'push', '-u', 'origin', 'main')
+  git(repo, 'remote', 'set-head', 'origin', 'main')
+  git(repo, 'checkout', '-b', 'dev')
+  await writeFile(join(repo, 'dev.txt'), 'dev\n')
+  git(repo, 'add', 'dev.txt')
+  git(repo, 'commit', '-m', 'dev')
+  git(repo, 'push', '-u', 'origin', 'dev')
+  const devSha = git(repo, 'rev-parse', 'HEAD')
+  const mainSha = git(repo, 'rev-parse', 'origin/main')
+  git(repo, 'checkout', '-b', 'feature')
   await writeFile(join(repo, 'new-file.txt'), 'new content\n')
+  git(lonely, 'init', '-b', 'main')
+  await writeFile(join(lonely, 'a.txt'), 'a\n')
+  git(lonely, 'add', 'a.txt')
+  git(lonely, 'commit', '-m', 'a')
 
   const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -4442,10 +4466,31 @@ test('gitDiffToRemote includes untracked files for Codex diff review', async () 
   })
   const reader = new JsonLineReader(proc)
   try {
+    // feature 刚从非默认的 origin/dev 分出：origin/dev 包含 HEAD 且距离为 0，基准是 dev。
     proc.stdin.write(json({ id: 1, method: 'gitDiffToRemote', params: { cwd: repo } }))
-    const response = await reader.nextResponse(1)
-    assert.match(response.result.diff, /new-file\.txt/)
-    assert.match(response.result.diff, /\+new content/)
+    const forked = await reader.nextResponse(1)
+    assert.equal(forked.result.sha, devSha)
+    assert.doesNotMatch(forked.result.diff, /dev\.txt/)
+    assert.match(forked.result.diff, /new file mode[\s\S]*\+new content/)
+
+    // 有了未推送提交后，没有远端分支包含 HEAD，按原生回退到默认分支 origin/main。
+    await writeFile(join(repo, 'unpushed.txt'), 'unpushed change\n')
+    git(repo, 'add', 'unpushed.txt')
+    git(repo, 'commit', '-m', 'unpushed')
+    proc.stdin.write(json({ id: 3, method: 'gitDiffToRemote', params: { cwd: repo } }))
+    const ahead = await reader.nextResponse(3)
+    assert.equal(ahead.result.sha, mainSha)
+    assert.match(ahead.result.diff, /\+dev/)
+    assert.match(ahead.result.diff, /\+unpushed change/)
+    assert.match(ahead.result.diff, /\+new content/)
+
+    proc.stdin.write(json({ id: 2, method: 'gitDiffToRemote', params: { cwd: lonely } }))
+    const failure = await reader.nextResponse(2)
+    assert.equal(failure.error.code, -32600)
+    assert.equal(
+      failure.error.message,
+      `failed to compute git diff to remote for cwd: ${JSON.stringify(lonely)}`,
+    )
   } finally {
     proc.kill()
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 80 })
@@ -5377,59 +5422,192 @@ test('mcpServerStatus/list enumerates tools and resources from the server', asyn
   }
 })
 
-test('fuzzyFileSearch session streams updated and completed notifications', async () => {
+test('fuzzyFileSearch 会话与 Codex 一致：先响应后通知、每次搜索都完成、停止不发完成', async () => {
   const home = await mkdtemp(join(tmpdir(), 'claude-codex-test-'))
-  await writeFile(join(home, 'findme-fixture.txt'), 'x')
+  const root = join(home, 'root')
+  await mkdir(join(root, 'finddir'), { recursive: true })
+  await writeFile(join(root, 'findme-fixture.txt'), 'x')
+  await writeFile(join(root, 'finddir', 'inner.txt'), 'x')
+  await writeFile(join(root, '.hidden-find.txt'), 'x')
   const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, CODEX_HOME: home, CLAUDE_CODEX_MOCK: '1', NODE_NO_WARNINGS: '1' },
   })
   const reader = new JsonLineReader(proc)
+  let id = 0
+  const request = (method: string, params: unknown) => {
+    id += 1
+    proc.stdin.write(json({ id, method, params }))
+    return id
+  }
+  // 读到指定请求的响应为止，返回期间收到的所有消息（含响应）。
+  const until = async (requestId: number) => {
+    const messages: any[] = []
+    for (;;) {
+      const message = await reader.next()
+      messages.push(message)
+      if (message.id === requestId && message.method == null) return messages
+    }
+  }
+  const search = async (query: string) => {
+    const updateId = request('fuzzyFileSearch/sessionUpdate', { sessionId: 's1', query })
+    const response = await reader.next()
+    assert.equal(response.id, updateId, '更新须先返回响应，再发送通知')
+    const updated = await reader.next()
+    assert.equal(updated.method, 'fuzzyFileSearch/sessionUpdated')
+    const completed = await reader.next()
+    assert.equal(completed.method, 'fuzzyFileSearch/sessionCompleted')
+    assert.equal(completed.params.sessionId, 's1')
+    return updated.params
+  }
   try {
-    proc.stdin.write(
-      json({
-        id: 1,
-        method: 'fuzzyFileSearch/sessionStart',
-        params: { sessionId: 's1', roots: [home] },
-      }),
-    )
-    await reader.nextResponse(1)
+    const startId = request('fuzzyFileSearch/sessionStart', { sessionId: 's1', roots: [root] })
+    assert.deepEqual((await reader.next()).result, {}, `sessionStart ${startId}`)
+    const initial = await reader.next()
+    assert.equal(initial.method, 'fuzzyFileSearch/sessionUpdated')
+    assert.deepEqual(initial.params, { sessionId: 's1', query: '', files: [] })
+    assert.equal((await reader.next()).method, 'fuzzyFileSearch/sessionCompleted')
 
-    proc.stdin.write(
-      json({
-        id: 2,
-        method: 'fuzzyFileSearch/sessionUpdate',
-        params: { sessionId: 's1', query: 'findme' },
-      }),
-    )
-    const updated = await nextNotification(reader, 'fuzzyFileSearch/sessionUpdated')
-    assert.equal(updated.params.sessionId, 's1')
-    assert.equal(updated.params.query, 'findme')
-    const files = Array.isArray(updated.params.files) ? updated.params.files : []
+    const found = await search('findme')
+    assert.equal(found.query, 'findme')
     assert.ok(
-      files.some((file: Record<string, unknown>) =>
-        String(file.path).endsWith('findme-fixture.txt'),
+      found.files.some(
+        (file: any) => file.path === 'findme-fixture.txt' && file.match_type === 'file',
       ),
     )
-    await reader.nextResponse(2)
-
-    proc.stdin.write(
-      json({ id: 3, method: 'fuzzyFileSearch/sessionStop', params: { sessionId: 's1' } }),
+    const directory = await search('finddir')
+    assert.ok(
+      directory.files.some(
+        (file: any) => file.path === 'finddir' && file.match_type === 'directory',
+      ),
     )
-    const completed = await nextNotification(reader, 'fuzzyFileSearch/sessionCompleted')
-    assert.equal(completed.params.sessionId, 's1')
-    await reader.nextResponse(3)
+    const hidden = await search('hidden-find')
+    assert.ok(hidden.files.some((file: any) => file.path === '.hidden-find.txt'))
+    assert.deepEqual((await search('')).files, [])
 
+    // 连续更新：最新更新的响应之后只允许报告最新查询；更早的查询可能已在其前完成。
+    request('fuzzyFileSearch/sessionUpdate', { sessionId: 's1', query: 'zzz-stale' })
+    const latestId = request('fuzzyFileSearch/sessionUpdate', { sessionId: 's1', query: 'findme' })
+    await until(latestId)
+    const reported = [await reader.next(), await reader.next()]
+    assert.equal(reported[0].method, 'fuzzyFileSearch/sessionUpdated')
+    assert.equal(reported[0].params.query, 'findme')
+    assert.equal(reported[1].method, 'fuzzyFileSearch/sessionCompleted')
+
+    const stopId = request('fuzzyFileSearch/sessionStop', { sessionId: 's1' })
+    assert.deepEqual((await reader.next()).result, {}, `sessionStop ${stopId}`)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const afterStopId = request('fuzzyFileSearch/sessionUpdate', {
+      sessionId: 's1',
+      query: 'findme',
+    })
+    const afterStop = await until(afterStopId)
+    assert.equal(afterStop.length, 1, '停止后不得再有任何会话通知')
+    assert.equal(afterStop[0].error.code, -32600)
+    assert.equal(afterStop[0].error.message, 'fuzzy file search session not found: s1')
+
+    const emptyIdRequest = request('fuzzyFileSearch/sessionStart', { sessionId: '', roots: [root] })
+    assert.equal((await reader.next()).error.code, -32600, `empty sessionId ${emptyIdRequest}`)
+    const emptyRootsRequest = request('fuzzyFileSearch/sessionStart', {
+      sessionId: 's2',
+      roots: [],
+    })
+    assert.equal((await reader.next()).error.code, -32603, `empty roots ${emptyRootsRequest}`)
+    const oneShot = request('fuzzyFileSearch', { query: '', roots: [root] })
+    assert.deepEqual((await reader.next()).result, { files: [] }, `one-shot ${oneShot}`)
+  } finally {
+    proc.kill()
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 80 })
+  }
+})
+
+test('thread/backgroundTerminals 列出、分页、结束与清理本轮后台 shell', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'claude-codex-test-'))
+  const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, CODEX_HOME: home, CLAUDE_CODEX_MOCK: '1', NODE_NO_WARNINGS: '1' },
+  })
+  const reader = new JsonLineReader(proc)
+  let id = 0
+  const call = async (method: string, params: unknown) => {
+    id += 1
+    proc.stdin.write(json({ id, method, params }))
+    return reader.nextResponse(id)
+  }
+  try {
+    const missing = await call('thread/backgroundTerminals/list', { threadId: 'no-such-thread' })
+    assert.equal(missing.error.code, -32600)
+    assert.equal(missing.error.message, 'thread not found: no-such-thread')
+
+    const started = await call('thread/start', { cwd: home })
+    const threadId = started.result.thread.id
+    const idle = await call('thread/backgroundTerminals/list', { threadId })
+    assert.deepEqual(idle.result, { data: [], nextCursor: null })
+
+    id += 1
+    const turnRequest = id
     proc.stdin.write(
       json({
-        id: 4,
-        method: 'fuzzyFileSearch/sessionUpdate',
-        params: { sessionId: 's1', query: 'findme' },
+        id: turnRequest,
+        method: 'turn/start',
+        params: {
+          threadId,
+          input: [{ type: 'text', text: 'mock background shells', text_elements: [] }],
+        },
       }),
     )
-    const afterStop = await reader.next()
-    assert.equal(afterStop.id, 4)
-    assert.equal(afterStop.method, undefined)
+    const commandItems: Record<string, string> = {}
+    while (Object.keys(commandItems).length < 2) {
+      const message = await reader.next()
+      if (message.method === 'item/started' && message.params.item.type === 'commandExecution')
+        commandItems[message.params.item.processId] = message.params.item.id
+    }
+
+    const listed = await call('thread/backgroundTerminals/list', { threadId })
+    assert.deepEqual(
+      listed.result.data.map((terminal: any) => [terminal.processId, terminal.command]),
+      [
+        ['claude:tool-bg-1', 'sleep 101'],
+        ['claude:tool-bg-2', 'sleep 102'],
+      ],
+    )
+    assert.equal(listed.result.data[0].itemId, commandItems['claude:tool-bg-1'])
+    assert.equal(listed.result.data[0].cwd, home)
+    assert.equal(listed.result.data[0].osPid, null)
+
+    const page = await call('thread/backgroundTerminals/list', { threadId, limit: 1 })
+    assert.equal(page.result.data.length, 1)
+    assert.equal(page.result.nextCursor, 'claude:tool-bg-1')
+    const next = await call('thread/backgroundTerminals/list', {
+      threadId,
+      cursor: page.result.nextCursor,
+      limit: 1,
+    })
+    assert.deepEqual(
+      next.result.data.map((terminal: any) => terminal.processId),
+      ['claude:tool-bg-2'],
+    )
+    assert.equal(next.result.nextCursor, null)
+
+    const first = await call('thread/backgroundTerminals/terminate', {
+      threadId,
+      processId: 'claude:tool-bg-1',
+    })
+    assert.deepEqual(first.result, { terminated: true })
+    const again = await call('thread/backgroundTerminals/terminate', {
+      threadId,
+      processId: 'claude:tool-bg-1',
+    })
+    assert.deepEqual(again.result, { terminated: false })
+
+    const cleaned = await call('thread/backgroundTerminals/clean', { threadId })
+    assert.deepEqual(cleaned.result, {})
+    for (;;) {
+      const message = await reader.next()
+      if (message.method === 'turn/completed') break
+    }
+    const after = await call('thread/backgroundTerminals/list', { threadId })
+    assert.deepEqual(after.result, { data: [], nextCursor: null })
   } finally {
     proc.kill()
     await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 80 })

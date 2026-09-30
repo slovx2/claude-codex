@@ -72,12 +72,13 @@ import type {
   NativeModelInfo,
   NativeSessionFork,
   PermissionDecision,
+  RuntimeBackgroundShell,
   RuntimeHandlers,
   RuntimeTurnContext,
   UserInputAnswers,
   UserInputQuestion,
 } from './types.mjs'
-import { newId } from './util.mjs'
+import { debugLog, newId } from './util.mjs'
 import { parseWorkflowCommand, workflowRuntimePrompt } from './workflow-command.mjs'
 import {
   defaultWorkflowTranscriptRoots,
@@ -87,6 +88,15 @@ import {
 } from './workflow-subagents.mjs'
 
 type ClaudeSdk = typeof import('@anthropic-ai/claude-agent-sdk')
+
+// background_tasks_changed 先于 task_started 到达，列出时再关联工具调用与命令。
+interface BackgroundShellState {
+  live: Map<string, number>
+  taskToolUse: Map<string, string>
+  bashCommand: Map<string, string>
+  seqByTask: Map<string, number>
+  nextSeq: number
+}
 
 interface PendingTurn {
   credentialScope: string | null
@@ -158,6 +168,7 @@ const WORKFLOW_JOURNAL_SETTLE_TIMEOUT_MS = 3_000
 export class NativeClaudeRuntime implements ClaudeRuntime {
   private sdk: ClaudeSdk | null = null
   private turns = new Map<string, PendingTurn>()
+  private backgroundShells = new Map<string, BackgroundShellState>()
   private turnSettingsReady = new Map<
     string,
     { threadId: string; ready: Promise<PendingTurn | null> }
@@ -337,12 +348,61 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
           stopped = true
         }
       } finally {
-        if (stopped && this.processes.get(context.threadId) === nativeProcess)
+        if (stopped && this.processes.get(context.threadId) === nativeProcess) {
           this.processes.delete(context.threadId)
+          // 后台 shell 随本轮 CLI 进程结束。
+          this.backgroundShells.delete(context.threadId)
+        }
         if (this.cleanup.get(context.threadId) === cleanup) this.cleanup.delete(context.threadId)
         cleaned()
       }
     }
+  }
+
+  listBackgroundShells(threadId: string): RuntimeBackgroundShell[] {
+    const state = this.backgroundShells.get(threadId)
+    if (!state) return []
+    return [...state.live]
+      .map(([taskId, seq]) => {
+        const toolUseId = state.taskToolUse.get(taskId) ?? null
+        return {
+          taskId,
+          toolUseId,
+          command: (toolUseId && state.bashCommand.get(toolUseId)) || '',
+          seq,
+        }
+      })
+      .sort((a, b) => a.seq - b.seq)
+  }
+
+  async stopBackgroundShell(threadId: string, taskId: string): Promise<boolean> {
+    if (!this.backgroundShells.get(threadId)?.live.has(taskId)) return false
+    const pending = [...this.turns.values()].find(
+      (turn) => turn.context.threadId === threadId && !turn.resolved,
+    )
+    if (!pending) return false
+    try {
+      await pending.query.stopTask(taskId)
+      return true
+    } catch (error) {
+      debugLog('native.backgroundShell.stopFailed', { threadId, taskId, error: String(error) })
+      return false
+    }
+  }
+
+  private backgroundShellState(threadId: string): BackgroundShellState {
+    let state = this.backgroundShells.get(threadId)
+    if (!state) {
+      state = {
+        live: new Map(),
+        taskToolUse: new Map(),
+        bashCommand: new Map(),
+        seqByTask: new Map(),
+        nextSeq: 0,
+      }
+      this.backgroundShells.set(threadId, state)
+    }
+    return state
   }
 
   async steer(threadId: string, prompt: string): Promise<void> {
@@ -953,6 +1013,32 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     message: Record<string, unknown>,
   ): Promise<void> {
     const subtype = String(message.subtype ?? '')
+    if (subtype === 'background_tasks_changed' && Array.isArray(message.tasks)) {
+      const state = this.backgroundShellState(pending.context.threadId)
+      const live = new Map<string, number>()
+      for (const task of message.tasks as Array<Record<string, unknown>>) {
+        if (task.task_type !== 'local_bash' || task.ambient === true) continue
+        if (typeof task.task_id !== 'string' || !task.task_id) continue
+        let seq = state.seqByTask.get(task.task_id)
+        if (seq == null) {
+          seq = state.nextSeq++
+          state.seqByTask.set(task.task_id, seq)
+        }
+        live.set(task.task_id, seq)
+      }
+      state.live = live
+      return
+    }
+    if (
+      subtype === 'task_started' &&
+      message.task_type === 'local_bash' &&
+      typeof message.task_id === 'string' &&
+      typeof message.tool_use_id === 'string'
+    )
+      this.backgroundShellState(pending.context.threadId).taskToolUse.set(
+        message.task_id,
+        message.tool_use_id,
+      )
     if (subtype === 'hook_started' || subtype === 'hook_progress' || subtype === 'hook_response') {
       if (typeof message.hook_id !== 'string' || !message.hook_id) return
       await pending.handlers.onEvent({
@@ -1327,6 +1413,11 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         const name = String(block.name ?? '')
         const input = (block.input as Record<string, unknown>) || {}
         if (!id) continue
+        if (name === 'Bash')
+          this.backgroundShellState(pending.context.threadId).bashCommand.set(
+            id,
+            String(input.command ?? ''),
+          )
         // Suppress nested tool uses while a subagent is in flight.
         const parentSubagent = nestedMessage || pending.activeSubagents.size > 0
         if (isSubagentTool(name)) {

@@ -490,8 +490,18 @@ export type NativeModelInfo = {
   supportedEffortLevels?: string[]
 }
 
+// 本轮 CLI 中仍存活的后台 Bash 任务（Claude 的后台 shell 随每轮 CLI 退出）。
+export type RuntimeBackgroundShell = {
+  taskId: string
+  toolUseId: string | null
+  command: string
+  seq: number
+}
+
 export interface ClaudeRuntime {
   supportedModels?(): Promise<NativeModelInfo[]>
+  listBackgroundShells?(threadId: string): RuntimeBackgroundShell[]
+  stopBackgroundShell?(threadId: string, taskId: string): Promise<boolean>
   updateTurnSettings?(
     threadId: string,
     turnId: string,

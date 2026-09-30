@@ -2,6 +2,7 @@
 import { chmodSync, existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { buildInfo } from './build-info.mjs'
+import { ProcessRpc } from './process-rpc.mjs'
 import { createRuntime } from './runtime-factory.mjs'
 import { CodexClaudeAppServer } from './server.mjs'
 import { loadRuntimeModelCatalog } from './server-helpers.mjs'
@@ -56,6 +57,10 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2)
   if (args[0] === '--runtime-info') {
     process.stdout.write(`${JSON.stringify(buildInfo())}\n`)
+    return
+  }
+  if (args[0] === '--pty-self-check') {
+    await ptySelfCheck()
     return
   }
   if (args[0] !== 'app-server') {
@@ -180,6 +185,52 @@ async function main(): Promise<void> {
     return
   }
   await startWebSocketTransport(normalized, onMessage, onClose, onConnect)
+}
+
+// 打包后的自检：用假 peer 驱动 ProcessRpc 跑一次真实 PTY，确认 pty-bridge.py 随包可用。
+async function ptySelfCheck(): Promise<void> {
+  const processes = new ProcessRpc()
+  let output = ''
+  let notify: (params: Record<string, unknown>) => void = () => {}
+  const exited = new Promise<Record<string, unknown>>((resolve) => {
+    notify = resolve
+  })
+  const peer: RpcPeer = {
+    id: 'pty-self-check',
+    send: (message) => {
+      if (!('method' in message)) return
+      // tty 的输出只能通过流式通知拿到。
+      if (message.method === 'process/outputDelta')
+        output += Buffer.from(
+          String((message.params as Record<string, unknown>).deltaBase64 ?? ''),
+          'base64',
+        ).toString('utf8')
+      else if (message.method === 'process/exited')
+        notify(message.params as Record<string, unknown>)
+    },
+    close: () => {},
+  }
+  let timer: NodeJS.Timeout | undefined
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('PTY 自检超时：没有收到 process/exited')), 10_000)
+  })
+  try {
+    await processes.start(peer, 'process', {
+      processHandle: 'pty-self-check',
+      cwd: process.cwd(),
+      tty: true,
+      size: { rows: 7, cols: 13 },
+      command: ['/bin/sh', '-c', 'test -t 0 && test -t 1 && stty size'],
+    })
+    const result = await Promise.race([exited, timeout])
+    if (result.exitCode !== 0) throw new Error(`PTY 自检退出码为 ${result.exitCode}`)
+    if (!output.includes('7 13'))
+      throw new Error(`PTY 自检输出不含尺寸 7 13：${JSON.stringify(output)}`)
+    process.stdout.write('pty-self-check ok\n')
+  } finally {
+    clearTimeout(timer)
+    await processes.close()
+  }
 }
 
 function getArg(args: string[], name: string): string | null {
