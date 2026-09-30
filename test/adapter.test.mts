@@ -549,7 +549,7 @@ test('Claude 入口拒绝 GPT 模型，恢复不会改变引擎', async () => {
   }
 })
 
-test('model/list exposes Claude model aliases and Codex-safe reasoning efforts', async () => {
+test('model/list follows the native Claude catalog with Codex-safe reasoning efforts', async () => {
   const home = await mkdtemp(join(tmpdir(), 'claude-codex-test-'))
   const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -601,29 +601,27 @@ test('model/list exposes Claude model aliases and Codex-safe reasoning efforts',
     proc.stdin.write(json({ id: 2, method: 'model/list', params: {} }))
     const models = await reader.nextResponse(2)
     const ids = models.result.data.map((model: any) => model.id)
-    assert.equal(ids.includes('sonnet'), true)
-    assert.equal(ids.includes('opus'), true)
-    assert.equal(ids.includes('fable'), true)
-    assert.equal(ids.includes('sonnet-1m'), true)
-    assert.equal(ids.includes('opus-plan'), true)
-    const fable = models.result.data.find((model: any) => model.id === 'fable')
-    assert.equal(fable.displayName, 'Claude Fable')
-    const opusPlan = models.result.data.find((model: any) => model.id === 'opus-plan')
-    assert.match(opusPlan.displayName, /Opus.*Sonnet/)
-    assert.match(opusPlan.description, /plan/i)
-    assert.match(opusPlan.description, /Sonnet/)
-    assert.equal(
-      ids.some((id: string) => id.startsWith('runtime-')),
-      false,
-    )
-    const opus = models.result.data.find((model: any) => model.id === 'opus')
-    assert.equal(opus.isDefault, true)
-    assert.deepEqual(opus.serviceTiers, [])
-    assert.equal(opus.defaultServiceTier, null)
-    assert.equal(opus.modelSpecialty, null)
+    assert.deepEqual(ids, [
+      'default',
+      'opus[1m]',
+      'claude-fable-5-1',
+      'sonnet',
+      'sonnet[1m]',
+      'haiku',
+    ])
+    const fable = models.result.data.find((model: any) => model.id === 'claude-fable-5-1')
+    assert.equal(fable.displayName, 'Fable')
+    assert.match(fable.description, /Fable 5\.1/)
+    // 配置的默认模型 opus 不是目录行时，默认标记落在原生 default 行上。
+    const defaultRow = models.result.data.find((model: any) => model.id === 'default')
+    assert.equal(defaultRow.displayName, 'Default (recommended)')
+    assert.equal(defaultRow.isDefault, true)
+    assert.deepEqual(defaultRow.serviceTiers, [])
+    assert.equal(defaultRow.defaultServiceTier, null)
+    assert.equal(defaultRow.modelSpecialty, null)
     assert.equal(models.result.data.filter((model: any) => model.isDefault === true).length, 1)
     assert.deepEqual(
-      opus.supportedReasoningEfforts.map((entry: any) => entry.reasoningEffort),
+      defaultRow.supportedReasoningEfforts.map((entry: any) => entry.reasoningEffort),
       ['low', 'medium', 'high', 'xhigh'],
     )
 
@@ -3181,7 +3179,7 @@ test('Task subagent emits the canonical activity lifecycle and leaves wait as th
     // 默认沿用原生配置；子代理继承父会话的默认模型选择。
     assert.equal(
       spawnEnd.model,
-      'claude-default',
+      'default',
       'collabAgentToolCall.model should be the parent thread model when no Task input.model is set',
     )
 

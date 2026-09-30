@@ -3,6 +3,7 @@ import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type {
   ClaudeRuntime,
+  NativeModelInfo,
   NativeSessionFork,
   RuntimeHandlers,
   RuntimeTurnContext,
@@ -413,6 +414,26 @@ export class MockRuntime implements ClaudeRuntime {
   }
 
   async steer(_threadId: string, _prompt: string): Promise<void> {}
+
+  // 与原生 supportedModels() 形状一致的固定目录，供不启动 CLI 的测试使用。
+  async supportedModels(): Promise<NativeModelInfo[]> {
+    const efforts = ['low', 'medium', 'high', 'xhigh', 'max']
+    const row = (value: string, displayName: string, description: string, withEffort = true) => ({
+      value,
+      resolvedModel: `mock-${value}`,
+      displayName,
+      description,
+      ...(withEffort ? { supportedEffortLevels: efforts } : {}),
+    })
+    return [
+      row('default', 'Default (recommended)', 'Use the default model (currently Mock Opus)'),
+      row('opus[1m]', 'Opus (1M context)', 'Mock Opus with 1M context'),
+      row('claude-fable-5-1', 'Fable', 'Fable 5.1 · Mock'),
+      row('sonnet', 'Sonnet', 'Mock Sonnet'),
+      row('sonnet[1m]', 'Sonnet (1M context)', 'Mock Sonnet with 1M context'),
+      row('haiku', 'Haiku', 'Mock Haiku', false),
+    ]
+  }
 
   async stop(): Promise<void> {}
 }

@@ -481,7 +481,17 @@ export interface NativeSessionFork {
   messageIds: Record<string, string>
 }
 
+// 与原生 /model 菜单一致的模型行：value 可直接传给 SDK，default 表示交由原生配置决定。
+export type NativeModelInfo = {
+  value: string
+  resolvedModel?: string
+  displayName: string
+  description: string
+  supportedEffortLevels?: string[]
+}
+
 export interface ClaudeRuntime {
+  supportedModels?(): Promise<NativeModelInfo[]>
   updateTurnSettings?(
     threadId: string,
     turnId: string,

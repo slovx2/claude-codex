@@ -361,9 +361,9 @@ function getDiscoveredRouterModelsCached(): Set<string> {
   return set
 }
 
-let cachedClaudeModelOptions: { expiresAt: number; data: Array<any> } | null = null
 const cachedCodexProxyModelOptions: { expiresAt: number; data: Array<any> } | null = null
 
+// 仅用于显式配置的 CLAUDE_CODEX_MODELS；默认目录取自原生 CLI。
 export function claudeModelOptions(): Array<{
   id: string
   sdkModel: string | null
@@ -401,50 +401,7 @@ export function claudeModelOptions(): Array<{
       .map((part) => modelOption(part.trim()))
       .filter((entry) => entry.id.length > 0)
   }
-  const now = Date.now()
-  if (cachedClaudeModelOptions && cachedClaudeModelOptions.expiresAt > now) {
-    return cachedClaudeModelOptions.data
-  }
-
-  const models = new Set<string>()
-  models.add('sonnet')
-  models.add('opus')
-  models.add('fable')
-  models.add('haiku')
-  models.add('sonnet-1m')
-  models.add('opus-plan')
-
-  const cacheBase = join(homedir(), '.cache')
-  if (existsSync(cacheBase)) {
-    try {
-      for (const sub of readdirSync(cacheBase)) {
-        const routerDir = join(cacheBase, sub, 'claude-router')
-        if (existsSync(routerDir)) {
-          for (const item of readdirSync(routerDir)) {
-            if (!item.startsWith('.')) models.add(item)
-          }
-        }
-      }
-    } catch {}
-  }
-
-  const extraRoots = (process.env.CLAUDE_CONFIG_DIRS || process.env.CLAUDE_ROUTER_DIR || '')
-    .split(/[,:]/)
-    .map((p) => p.trim())
-    .filter(Boolean)
-  for (const extra of extraRoots) {
-    if (existsSync(extra)) {
-      try {
-        for (const item of readdirSync(extra)) {
-          if (!item.startsWith('.')) models.add(item)
-        }
-      } catch {}
-    }
-  }
-
-  const result = Array.from(models).map((m, i) => modelOption(m, i === 0))
-  cachedClaudeModelOptions = { expiresAt: now + 15_000, data: result }
-  return result
+  return []
 }
 
 export function resolveClaudeModel(

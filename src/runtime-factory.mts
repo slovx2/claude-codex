@@ -12,6 +12,7 @@ import {
 import type { RuntimeTurnSettings } from './turn-settings.mjs'
 import type {
   ClaudeRuntime,
+  NativeModelInfo,
   NativeSessionFork,
   RuntimeHandlers,
   RuntimeTurnContext,
@@ -82,6 +83,12 @@ class SelectableRuntime implements ClaudeRuntime {
     const runtime = this.runtimeFor(this.config.type)
     if (!runtime.forkSession) throw new Error('当前运行时不支持原生会话分叉')
     return runtime.forkSession(sessionId, cwd, upToMessageId)
+  }
+
+  async supportedModels(): Promise<NativeModelInfo[]> {
+    const runtime = this.runtimeFor(this.config.type)
+    if (!runtime.supportedModels) throw new Error('当前运行时不提供原生模型目录')
+    return runtime.supportedModels()
   }
 
   async appendContext(context: ContextInjection): Promise<{ boundary: string }> {

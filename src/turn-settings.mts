@@ -1,5 +1,5 @@
 import { ProtocolError, requiredString } from './protocol-contract.mjs'
-import { allSelectableModelOptions } from './server-helpers.mjs'
+import { isSelectableModel } from './server-helpers.mjs'
 import { debugLog, isCodexOpenAiModel, resolveClaudeEffort, resolveClaudeModel } from './util.mjs'
 
 export type RuntimeTurnSettings = {
@@ -37,10 +37,7 @@ export function parseTurnSettings(params: Record<string, unknown>): RuntimeTurnS
   const settings: RuntimeTurnSettings = {}
   if (params.model != null) {
     const model = requiredString(params.model, 'model')
-    if (
-      isCodexOpenAiModel(model) ||
-      !allSelectableModelOptions().some((option) => option.id === model)
-    )
+    if (isCodexOpenAiModel(model) || !isSelectableModel(model))
       throw new ProtocolError(-32602, '模型不在当前运行时模型目录中')
     const resolved = resolveClaudeModel(model)
     if (!resolved) throw new ProtocolError(-32602, '不能在运行中清除模型选择')

@@ -20,7 +20,8 @@ function variable(name: unknown, env: NodeJS.ProcessEnv): string {
   return env[name]!
 }
 
-// Codex 的 MCP 配置与 Claude SDK 字段不同；只翻译已明确实现的语义。
+// Codex 的 MCP 配置与 Claude SDK 字段不同；只翻译连接相关字段，其余字段（如
+// default_tools_approval_mode）忽略。MCP 工具审批跟随会话权限：完全访问自动允许，否则询问。
 export function sdkMcpServers(
   value: unknown,
   env: NodeJS.ProcessEnv = process.env,
@@ -34,23 +35,6 @@ export function sdkMcpServers(
     const type = server.type ?? (server.url ? 'http' : 'stdio')
     if (!['stdio', 'http', 'sse'].includes(String(type)))
       throw new ProtocolError(-32602, `不支持 MCP 传输 ${type}`)
-    const supported = new Set([
-      'type',
-      'enabled',
-      'command',
-      'args',
-      'env',
-      'env_vars',
-      'url',
-      'headers',
-      'http_headers',
-      'env_http_headers',
-      'bearer_token_env_var',
-      'startup_timeout_sec',
-      'tool_timeout_sec',
-    ])
-    for (const key of Object.keys(server))
-      if (!supported.has(key)) throw new ProtocolError(-32602, `MCP 配置字段尚未实现: ${key}`)
     if (type === 'stdio') {
       if (typeof server.command !== 'string' || !server.command)
         throw new ProtocolError(-32602, 'stdio MCP 缺少 command')

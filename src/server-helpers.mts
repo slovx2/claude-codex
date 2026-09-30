@@ -1,7 +1,7 @@
 import { type ChildProcess, execFile, spawn } from 'node:child_process'
-import { type FSWatcher, readFileSync, watch, writeFileSync } from 'node:fs'
+import { type FSWatcher, readFileSync, statSync, watch, writeFileSync } from 'node:fs'
 import { copyFile, mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { ApprovalPolicy } from './approval-policy.mjs'
@@ -68,47 +68,95 @@ export function stringOr(value: unknown, fallback: string): string {
   return typeof value === 'string' && value.length > 0 ? value : fallback
 }
 
-export function allSelectableModelOptions(): Array<{
+export type SelectableModelOption = {
   id: string
   sdkModel: string | null
   displayName: string
   description: string
   isDefault?: boolean
-}> {
+  efforts?: string[]
+}
+
+// 原生目录取得前只提供默认项；默认项交由原生 SDK 解析 settings.json。
+const defaultModelOption: SelectableModelOption = {
+  id: 'default',
+  sdkModel: null,
+  displayName: 'Default',
+  description: 'Use the model configured for Claude Code',
+  isDefault: true,
+}
+let runtimeModelCatalog: { key: string; options: SelectableModelOption[] } | null = null
+
+// 原生目录随固定 CLI 与 Claude 用户设置变化；设置文件改变后重新读取。
+function modelCatalogKey(): string {
+  const settings = join(
+    process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
+    'settings.json',
+  )
+  try {
+    const stat = statSync(settings)
+    return `${stat.mtimeMs}:${stat.size}`
+  } catch {
+    return 'none'
+  }
+}
+
+export async function loadRuntimeModelCatalog(runtime: ClaudeRuntime): Promise<void> {
+  if (process.env.CLAUDE_CODEX_MODELS || !runtime.supportedModels) return
+  const key = modelCatalogKey()
+  if (runtimeModelCatalog?.key === key) return
+  try {
+    const models = await runtime.supportedModels()
+    runtimeModelCatalog = {
+      key,
+      options: models.map((model) => ({
+        id: model.value,
+        sdkModel: model.value === 'default' ? null : model.value,
+        displayName: model.displayName,
+        description: model.description,
+        isDefault: model.value === 'default',
+        ...(model.supportedEffortLevels ? { efforts: model.supportedEffortLevels } : {}),
+      })),
+    }
+  } catch (error) {
+    debugLog('model.catalog.failed', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+export function allSelectableModelOptions(): SelectableModelOption[] {
   if (process.env.CLAUDE_CODEX_MODELS) return claudeModelOptions()
-  // 默认项交由原生 SDK 解析 settings.json，不能用内置列表首项覆盖用户配置。
-  return [
-    {
-      id: 'claude-default',
-      sdkModel: null,
-      displayName: 'Claude configured default',
-      description: 'Use the model configured in Claude Code settings.json',
-      isDefault: true,
-    },
-    ...claudeModelOptions()
-      .filter((option) => option.id !== 'claude-default')
-      .map((option) => ({ ...option, isDefault: false })),
-  ]
+  return runtimeModelCatalog?.options ?? [defaultModelOption]
+}
+
+// 除目录行外，也接受 CLI 可直接解析的别名与完整型号（例如持久化的 opus）；
+// 显式配置 CLAUDE_CODEX_MODELS 时只接受该列表。
+export function isSelectableModel(id: string): boolean {
+  if (allSelectableModelOptions().some((option) => option.id.toLowerCase() === id.toLowerCase()))
+    return true
+  if (process.env.CLAUDE_CODEX_MODELS) return false
+  return (
+    /^(default|best|opusplan|sonnet-1m|opus-plan|(sonnet|opus|haiku|fable)(\[1m\])?)$/.test(id) ||
+    /^claude-[a-z0-9.-]+(\[1m\])?$/.test(id)
+  )
 }
 
 export function defaultSelectableModelId(): string {
   const options = allSelectableModelOptions()
   const defaultModel = process.env.CLAUDE_CODEX_DEFAULT_MODEL
-  if (defaultModel && options.some((option) => option.id === defaultModel)) return defaultModel
-  if (process.env.CLAUDE_CODEX_MODELS)
-    return (
-      options.find((option) => option.isDefault === true)?.id ?? options[0]?.id ?? 'claude-default'
-    )
-  return 'claude-default'
+  if (defaultModel && isSelectableModel(defaultModel)) return defaultModel
+  return options.find((option) => option.isDefault === true)?.id ?? options[0]?.id ?? 'default'
 }
 
 export function normalizeSelectableModelId(value: string, fallback: string): string {
   const options = allSelectableModelOptions()
-  const ids = new Set(options.map((option) => option.id))
-  if (ids.has(value)) return value
-  const matched = options.find((opt) => opt.id.toLowerCase() === value.toLowerCase())
-  if (matched) return matched.id
-  if (ids.has(fallback)) return fallback
+  for (const candidate of [value, fallback])
+    if (isSelectableModel(candidate))
+      return (
+        options.find((option) => option.id.toLowerCase() === candidate.toLowerCase())?.id ??
+        candidate
+      )
   const defaultModel = defaultSelectableModelId()
   debugLog('config.model.repaired', { requestedModel: value, repairedModel: defaultModel })
   return defaultModel

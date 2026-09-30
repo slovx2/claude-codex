@@ -75,8 +75,10 @@ import {
   hasLegacyPermissionParams,
   isGitWorkTree,
   isNotAGitRepo,
+  isSelectableModel,
   isSubagentToolName,
   listFiles,
+  loadRuntimeModelCatalog,
   modelFromParams,
   normalizeApprovalPolicy,
   normalizeDecision,
@@ -522,6 +524,8 @@ export class CodexClaudeAppServer {
           ],
         }
       case 'initialize': {
+        // Claude 用户设置（如模型服务）变更后，新连接看到的模型目录随之刷新。
+        await loadRuntimeModelCatalog(this.runtime)
         this.accountPeers.add(peer)
         const initParams = asRecord(params)
         const clientInfo = asRecord(initParams.clientInfo)
@@ -4783,12 +4787,17 @@ export class CodexClaudeAppServer {
     const defaultModel = this.configModel
     const options = allSelectableModelOptions()
     const hasConfiguredDefault = options.some((option) => option.id === defaultModel)
-    const reasoningEfforts = [
-      { reasoningEffort: 'low', description: 'Fast runtime response' },
-      { reasoningEffort: 'medium', description: 'Balanced runtime response' },
-      { reasoningEffort: 'high', description: 'Deeper runtime response' },
-      { reasoningEffort: 'xhigh', description: 'Maximum reasoning' },
-    ]
+    const effortDescriptions: Record<string, string> = {
+      low: 'Fast runtime response',
+      medium: 'Balanced runtime response',
+      high: 'Deeper runtime response',
+      xhigh: 'Maximum reasoning',
+    }
+    // 原生目录按模型给出推理强度；Codex 协议没有的档位（如 max）不暴露。
+    const reasoningEffortsFor = (efforts: string[] | undefined) =>
+      (efforts ?? Object.keys(effortDescriptions))
+        .filter((effort) => Object.hasOwn(effortDescriptions, effort))
+        .map((effort) => ({ reasoningEffort: effort, description: effortDescriptions[effort] }))
     const models = options.map((option) => ({
       id: option.id,
       model: option.id,
@@ -4799,7 +4808,7 @@ export class CodexClaudeAppServer {
       description: option.description,
       modelSpecialty: null,
       hidden: false,
-      supportedReasoningEfforts: reasoningEfforts,
+      supportedReasoningEfforts: reasoningEffortsFor(option.efforts),
       defaultReasoningEffort: this.configReasoningEffort,
       inputModalities: ['text', 'image'],
       supportsPersonality: false,
@@ -4963,8 +4972,7 @@ export class CodexClaudeAppServer {
     })
     if (
       values.model != null &&
-      (typeof values.model !== 'string' ||
-        !allSelectableModelOptions().some((model) => model.id === values.model))
+      (typeof values.model !== 'string' || !isSelectableModel(values.model))
     )
       throw new ProtocolError(-32602, '配置模型不属于当前 Claude 运行时目录')
     if (

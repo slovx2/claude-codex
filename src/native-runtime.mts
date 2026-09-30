@@ -69,6 +69,7 @@ import {
 import type { RuntimeTurnSettings } from './turn-settings.mjs'
 import type {
   ClaudeRuntime,
+  NativeModelInfo,
   NativeSessionFork,
   PermissionDecision,
   RuntimeHandlers,
@@ -427,6 +428,41 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     await Promise.all([...threads].map((threadId) => this.interrupt(threadId)))
     this.turns.clear()
     this.permissions.clear()
+  }
+
+  // 模型目录取自固定 CLI 的原生 /model 列表；只读元数据，不发送用户消息也不请求模型。
+  async supportedModels(): Promise<NativeModelInfo[]> {
+    const sdk = await this.loadSdk()
+    const abort = new AbortController()
+    const nativeProcess = new NativeProcess('model-catalog', newId())
+    const prompt = (async function* (): AsyncGenerator<never> {
+      await new Promise((resolve) =>
+        abort.signal.addEventListener('abort', resolve, { once: true }),
+      )
+    })()
+    const query = sdk.query({
+      prompt,
+      options: {
+        abortController: abort,
+        cwd: process.cwd(),
+        settingSources: ['user'],
+        tools: [],
+        mcpServers: {},
+        strictMcpConfig: true,
+        env: { ...process.env },
+        stderr: (data: string) => process.stderr.write(data),
+        spawnClaudeCodeProcess: nativeProcess.spawn.bind(nativeProcess),
+      },
+    })
+    const timeout = setTimeout(() => abort.abort(new Error('读取原生模型目录超时')), 20_000)
+    try {
+      return await query.supportedModels()
+    } finally {
+      clearTimeout(timeout)
+      abort.abort()
+      query.close()
+      await nativeProcess.terminate()
+    }
   }
 
   // ── private ──

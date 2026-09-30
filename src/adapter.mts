@@ -4,6 +4,7 @@ import { dirname } from 'node:path'
 import { buildInfo } from './build-info.mjs'
 import { createRuntime } from './runtime-factory.mjs'
 import { CodexClaudeAppServer } from './server.mjs'
+import { loadRuntimeModelCatalog } from './server-helpers.mjs'
 import { SessionStore } from './store.mjs'
 import {
   normalizeListenUrl,
@@ -94,6 +95,8 @@ async function main(): Promise<void> {
     )
   }
   const runtime = createRuntime()
+  // 持久化模型的校验与首个 model/list 都依赖原生目录，须在构造服务前读取。
+  await loadRuntimeModelCatalog(runtime)
   const server = new CodexClaudeAppServer(store, runtime)
   let shuttingDown = false
   const shutdown = async (reason: string) => {
