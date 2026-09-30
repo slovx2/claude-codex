@@ -33,7 +33,10 @@ type DatabaseSync = any
 
 function openDatabase(path: string): DatabaseSync {
   const sqlite = require('node:sqlite') as { DatabaseSync: new (filename: string) => DatabaseSync }
-  return new sqlite.DatabaseSync(path)
+  const db = new sqlite.DatabaseSync(path)
+  // 其他连接持有写锁时等待而不是立即报 database is locked。
+  db.exec('PRAGMA busy_timeout = 5000')
+  return db
 }
 
 export class SessionStore {

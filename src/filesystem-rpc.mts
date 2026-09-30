@@ -13,6 +13,7 @@ import {
 import { isAbsolute, join } from 'node:path'
 import { ProtocolError, requiredString } from './protocol-contract.mjs'
 import type { RpcPeer } from './types.mjs'
+import { debugLog } from './util.mjs'
 
 function pathParam(params: Record<string, unknown>, key = 'path'): string {
   const value = requiredString(params[key], key)
@@ -87,15 +88,40 @@ export class FilesystemRpc {
         const isDirectory = (await stat(path)).isDirectory()
         const owned = this.watchers.get(peer.id) ?? new Map<string, FSWatcher>()
         if (owned.has(watchId)) throw new ProtocolError(-32602, 'watchId 已在此连接使用')
-        const watcher = watch(
-          path,
-          { persistent: false, recursive: isDirectory },
-          (_, filename) => {
+        // 大目录的递归监视会耗尽系统 inotify 上限；失败时降级为只监视本层，仍失败则停止该监视。
+        // 监视错误只能在此消化，不能成为进程级异常。
+        const open = (recursive: boolean): FSWatcher => {
+          const watcher = watch(path, { persistent: false, recursive }, (_, filename) => {
             // 监视文件时 filename 仍可能是文件名，不能把它再次拼接到文件路径。
             const changedPath = isDirectory && filename ? join(path, String(filename)) : path
             peer.send({ method: 'fs/changed', params: { watchId, changedPaths: [changedPath] } })
-          },
-        )
+          })
+          watcher.on('error', (error) => {
+            watcher.close()
+            if (owned.get(watchId) !== watcher) return
+            owned.delete(watchId)
+            debugLog('fs.watch.failed', { watchId, path, recursive, error: String(error) })
+            if (!recursive) return
+            try {
+              owned.set(watchId, open(false))
+            } catch (fallbackError) {
+              debugLog('fs.watch.failed', {
+                watchId,
+                path,
+                recursive: false,
+                error: String(fallbackError),
+              })
+            }
+          })
+          return watcher
+        }
+        let watcher: FSWatcher
+        try {
+          watcher = open(isDirectory)
+        } catch (error) {
+          if (!isDirectory) throw error
+          watcher = open(false)
+        }
         owned.set(watchId, watcher)
         this.watchers.set(peer.id, owned)
         return { path }

@@ -33,12 +33,12 @@ process.on('uncaughtException', (error: unknown) => {
     swallowed: isExpected,
   })
   // EPIPE/ECONNRESET from peer disconnects are routine; swallow them so the
-  // daemon keeps serving other peers. Anything else: re-throw on next tick to
-  // preserve normal error semantics (and we already logged it).
+  // daemon keeps serving other peers. Anything else keeps normal crash
+  // semantics: exit so the host restarts the runtime. Re-throwing here would
+  // re-enter this handler forever and spin the event loop.
   if (!isExpected) {
-    setImmediate(() => {
-      throw error
-    })
+    process.exitCode = 1
+    setImmediate(() => process.exit(1))
   }
 })
 process.on('unhandledRejection', (reason: unknown) => {
