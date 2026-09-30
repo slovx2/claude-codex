@@ -5521,6 +5521,36 @@ test('fuzzyFileSearch 会话与 Codex 一致：先响应后通知、每次搜索
   }
 })
 
+test('fuzzyFileSearch 遍历部分出错（不可读目录、软链接循环）时保留已列出的结果', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'claude-codex-test-'))
+  const root = join(home, 'root')
+  const locked = join(root, 'locked')
+  await mkdir(locked, { recursive: true })
+  await writeFile(join(root, 'findme-partial.txt'), 'x')
+  execFileSync('ln', ['-s', '.', join(root, 'loop')])
+  // rg 与 find 遇到不可读目录都会以非零状态结束，但其余条目已经列出。
+  execFileSync('chmod', ['000', locked])
+  const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, CODEX_HOME: home, CLAUDE_CODEX_MOCK: '1', NODE_NO_WARNINGS: '1' },
+  })
+  const reader = new JsonLineReader(proc)
+  try {
+    proc.stdin.write(
+      json({ id: 1, method: 'fuzzyFileSearch', params: { query: 'findme', roots: [root] } }),
+    )
+    const response = await reader.nextResponse(1)
+    assert.ok(
+      response.result.files.some((file: any) => file.path === 'findme-partial.txt'),
+      JSON.stringify(response.result),
+    )
+  } finally {
+    proc.kill()
+    execFileSync('chmod', ['755', locked])
+    await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 80 })
+  }
+})
+
 test('thread/backgroundTerminals 列出、分页、结束与清理本轮后台 shell', async () => {
   const home = await mkdtemp(join(tmpdir(), 'claude-codex-test-'))
   const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {

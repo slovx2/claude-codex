@@ -1,12 +1,9 @@
-import { execFile } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { basename, dirname } from 'node:path'
-import { promisify } from 'node:util'
 import { fuzzyPathMatch } from './fuzzy-search.mjs'
 import { ProtocolError } from './protocol-contract.mjs'
 import type { RpcPeer } from './types.mjs'
 import { debugLog } from './util.mjs'
-
-const execFileAsync = promisify(execFile)
 
 // 移植 Codex 0.157.1 app-server/src/fuzzy_file_search.rs 与 request_processors/search.rs。
 const MATCH_LIMIT = 50
@@ -28,32 +25,40 @@ export interface FuzzyFileMatch {
 
 // 与原生 ignore 遍历一致：包含隐藏条目、跟随符号链接、仅在 git 仓库内应用 gitignore。
 // rg 只列文件，目录由文件路径推导（原生还会列出空目录，此处不包含）。
-async function listEntries(root: string): Promise<IndexedEntry[]> {
-  let files: string[]
-  try {
-    const { stdout } = await execFileAsync('rg', ['--files', '--hidden', '--follow'], {
-      cwd: root,
-      timeout: 30_000,
-      maxBuffer: 64 * 1024 * 1024,
-    })
-    files = stdout.split('\n').filter(Boolean)
-  } catch (rgError) {
-    debugLog('fuzzySearch.rgFailed', { root, error: String(rgError) })
-    try {
-      const { stdout } = await execFileAsync('find', ['-L', '.', '-type', 'f'], {
-        cwd: root,
-        timeout: 30_000,
-        maxBuffer: 64 * 1024 * 1024,
-      })
-      files = stdout
-        .split('\n')
-        .filter(Boolean)
-        .map((path) => path.replace(/^\.\//, ''))
-    } catch (findError) {
-      debugLog('fuzzySearch.findFailed', { root, error: String(findError) })
-      return []
+// 原生遍历对单个条目出错只跳过；rg/find 遇到不可读目录或符号链接循环会以非零状态结束，
+// 因此只要命令成功启动就采用其输出，命令不存在时才换下一个。
+function listing(command: string, args: string[], cwd: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = []
+    let settled = false
+    const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'ignore'] })
+    const finish = (value: string | null) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
     }
-  }
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      finish(Buffer.concat(chunks).toString('utf8'))
+    }, 30_000)
+    child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk))
+    child.once('error', (error) => {
+      debugLog('fuzzySearch.listFailed', { command, cwd, error: String(error) })
+      finish(null)
+    })
+    child.once('close', () => finish(Buffer.concat(chunks).toString('utf8')))
+  })
+}
+
+async function listEntries(root: string): Promise<IndexedEntry[]> {
+  const rg = await listing('rg', ['--files', '--hidden', '--follow'], root)
+  const found = rg ?? (await listing('find', ['-L', '.', '-type', 'f'], root))
+  if (found == null) return []
+  const files = found
+    .split('\n')
+    .filter(Boolean)
+    .map((path) => (rg == null ? path.replace(/^\.\//, '') : path))
   const directories = new Set<string>()
   for (const file of files)
     for (
