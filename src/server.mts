@@ -451,8 +451,11 @@ export class CodexClaudeAppServer {
       ].includes(method)
     )
       validateRuntimePermissions(asRecord(params))
-    rejectForeignModel(asRecord(params).model)
-    rejectForeignModel(asRecord(asRecord(params).config).model)
+    // 允许回退的 thread/start 由 threadStart 换成本运行时的默认模型，不能先按外部模型拒绝。
+    if (!(method === 'thread/start' && asRecord(params).allowProviderModelFallback === true)) {
+      rejectForeignModel(asRecord(params).model)
+      rejectForeignModel(asRecord(asRecord(params).config).model)
+    }
     if (
       [
         'plugin/install',
@@ -903,7 +906,13 @@ export class CodexClaudeAppServer {
     const now = nowSeconds()
     const requestedCwd = stringOr(params.cwd, process.cwd())
     const cwd = maybeCreateThreadWorktree(id, requestedCwd).cwd
-    const model = modelFromParams(params, this.configModel)
+    const requestedModel = modelFromParams(params, this.configModel)
+    // 与 Codex 的 allowProviderModelFallback 一致：Desktop 以自身默认模型（如 gpt-*）新建会话时，
+    // 本运行时目录中不可用的模型换成已保存的默认模型，而不是原样记录后在运行时静默改用 CLI 默认。
+    const model =
+      params.allowProviderModelFallback === true && !isSelectableModel(requestedModel)
+        ? this.configModel
+        : requestedModel
     const reasoningEffort = reasoningEffortFromParams(params, this.configReasoningEffort)
     const permissionProfileId = permissionProfileIdFromParams(params)
     const permissionProfile = permissionProfilePolicy(permissionProfileId)

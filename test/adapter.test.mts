@@ -6050,3 +6050,47 @@ test('thread sections paginate without losing entries at page boundaries', async
     await rm(home, { recursive: true, force: true })
   }
 })
+
+test('thread/start 允许回退时，不可用的客户端默认模型换成已保存的默认模型', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'claude-codex-test-'))
+  const directory = join(home, 'claude-codex-adapter')
+  await mkdir(directory, { recursive: true })
+  await writeFile(join(directory, 'config.json'), JSON.stringify({ model: 'sonnet[1m]' }))
+  const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      CODEX_HOME: home,
+      CLAUDE_CODEX_MOCK: '1',
+      CLAUDE_CODEX_MODELS: '',
+      NODE_NO_WARNINGS: '1',
+    },
+  })
+  const reader = new JsonLineReader(proc)
+  try {
+    proc.stdin.write(
+      json({
+        id: 1,
+        method: 'thread/start',
+        params: { cwd: process.cwd(), model: 'gpt-6-luna', allowProviderModelFallback: true },
+      }),
+    )
+    assert.equal((await reader.nextResponse(1)).result.model, 'sonnet[1m]')
+    proc.stdin.write(
+      json({
+        id: 2,
+        method: 'thread/start',
+        params: { cwd: process.cwd(), model: 'haiku', allowProviderModelFallback: true },
+      }),
+    )
+    assert.equal((await reader.nextResponse(2)).result.model, 'haiku')
+    proc.stdin.write(
+      json({ id: 3, method: 'thread/start', params: { cwd: process.cwd(), model: 'gpt-6-luna' } }),
+    )
+    assert.equal((await reader.nextResponse(3)).error.code, -32602)
+  } finally {
+    proc.kill()
+    await once(proc, 'exit')
+    await rm(home, { recursive: true, force: true })
+  }
+})
