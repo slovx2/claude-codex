@@ -610,11 +610,18 @@ test('model/list follows the native Claude catalog with Codex-safe reasoning eff
       'haiku',
     ])
     const fable = models.result.data.find((model: any) => model.id === 'claude-fable-5-1')
-    assert.equal(fable.displayName, 'Fable')
+    assert.equal(fable.displayName, 'Fable 5.1')
     assert.match(fable.description, /Fable 5\.1/)
     // 配置的默认模型 opus 不是目录行时，默认标记落在原生 default 行上。
     const defaultRow = models.result.data.find((model: any) => model.id === 'default')
-    assert.equal(defaultRow.displayName, 'Default (recommended)')
+    assert.equal(defaultRow.displayName, 'Default · Opus 5.5 (1M context)')
+    assert.deepEqual(models.result.data.map((model: any) => model.displayName).slice(1), [
+      'Opus 5.5 (1M context)',
+      'Fable 5.1',
+      'Sonnet 5',
+      'Sonnet 5 (1M context)',
+      'Haiku 4.5',
+    ])
     assert.equal(defaultRow.isDefault, true)
     assert.deepEqual(defaultRow.serviceTiers, [])
     assert.equal(defaultRow.defaultServiceTier, null)

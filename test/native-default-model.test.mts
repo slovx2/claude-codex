@@ -6,6 +6,7 @@ import {
   defaultSelectableModelId,
   isSelectableModel,
   loadRuntimeModelCatalog,
+  modelNameFromResolved,
   normalizeSelectableModelId,
 } from '../src/server-helpers.mjs'
 import type { ClaudeRuntime, NativeModelInfo } from '../src/types.mjs'
@@ -69,6 +70,17 @@ test('模型目录取自运行时原生列表；目录外的 Claude 别名与型
       ],
     )
     assert.deepEqual(allSelectableModelOptions()[0]?.efforts, ['low', 'max'])
+    assert.equal(allSelectableModelOptions()[0]?.displayName, 'Default · Opus 5.5 (1M context)')
+    assert.equal(allSelectableModelOptions()[1]?.displayName, 'Sonnet')
+    for (const [resolved, name] of [
+      ['claude-opus-5-5[1m]', 'Opus 5.5 (1M context)'],
+      ['claude-fable-5-1', 'Fable 5.1'],
+      ['claude-sonnet-5', 'Sonnet 5'],
+      ['claude-haiku-4-5-20251001', 'Haiku 4.5'],
+      ['claude-3-5-sonnet-20241022', null],
+      [undefined, null],
+    ] as const)
+      assert.equal(modelNameFromResolved(resolved), name, String(resolved))
     for (const model of ['opus', 'opus[1m]', 'claude-fable-5-1', 'sonnet-1m', 'claude-default'])
       assert.equal(isSelectableModel(model), true, model)
     for (const model of ['runtime-agent-http', 'gpt-5', ''])

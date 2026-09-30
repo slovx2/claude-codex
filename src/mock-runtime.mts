@@ -418,20 +418,36 @@ export class MockRuntime implements ClaudeRuntime {
   // 与原生 supportedModels() 形状一致的固定目录，供不启动 CLI 的测试使用。
   async supportedModels(): Promise<NativeModelInfo[]> {
     const efforts = ['low', 'medium', 'high', 'xhigh', 'max']
-    const row = (value: string, displayName: string, description: string, withEffort = true) => ({
+    const row = (
+      value: string,
+      resolvedModel: string,
+      displayName: string,
+      description: string,
+      withEffort = true,
+    ) => ({
       value,
-      resolvedModel: `mock-${value}`,
+      resolvedModel,
       displayName,
       description,
       ...(withEffort ? { supportedEffortLevels: efforts } : {}),
     })
     return [
-      row('default', 'Default (recommended)', 'Use the default model (currently Mock Opus)'),
-      row('opus[1m]', 'Opus (1M context)', 'Mock Opus with 1M context'),
-      row('claude-fable-5-1', 'Fable', 'Fable 5.1 · Mock'),
-      row('sonnet', 'Sonnet', 'Mock Sonnet'),
-      row('sonnet[1m]', 'Sonnet (1M context)', 'Mock Sonnet with 1M context'),
-      row('haiku', 'Haiku', 'Mock Haiku', false),
+      row(
+        'default',
+        'claude-opus-5-5[1m]',
+        'Default (recommended)',
+        'Use the default model (currently Mock Opus)',
+      ),
+      row('opus[1m]', 'claude-opus-5-5[1m]', 'Opus (1M context)', 'Mock Opus with 1M context'),
+      row('claude-fable-5-1', 'claude-fable-5-1', 'Fable', 'Fable 5.1 · Mock'),
+      row('sonnet', 'claude-sonnet-5', 'Sonnet', 'Mock Sonnet'),
+      row(
+        'sonnet[1m]',
+        'claude-sonnet-5[1m]',
+        'Sonnet (1M context)',
+        'Mock Sonnet with 1M context',
+      ),
+      row('haiku', 'claude-haiku-4-5-20251001', 'Haiku', 'Mock Haiku', false),
     ]
   }
 

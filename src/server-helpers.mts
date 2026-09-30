@@ -101,6 +101,16 @@ function modelCatalogKey(): string {
   }
 }
 
+// 以 resolvedModel（实际发往模型接口的型号）生成带精确版本的显示名，例如
+// claude-opus-5-5[1m] → Opus 5.5 (1M context)；无法识别的格式沿用 CLI 显示名。
+export function modelNameFromResolved(resolved: string | undefined): string | null {
+  const match = resolved?.match(/^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(\[1m\])?$/)
+  if (!match?.[1] || !match[2]) return null
+  const [, family, major, minor, longContext] = match
+  const name = `${family.charAt(0).toUpperCase()}${family.slice(1)} ${minor ? `${major}.${minor}` : major}`
+  return longContext ? `${name} (1M context)` : name
+}
+
 export async function loadRuntimeModelCatalog(runtime: ClaudeRuntime): Promise<void> {
   if (process.env.CLAUDE_CODEX_MODELS || !runtime.supportedModels) return
   const key = modelCatalogKey()
@@ -109,14 +119,22 @@ export async function loadRuntimeModelCatalog(runtime: ClaudeRuntime): Promise<v
     const models = await runtime.supportedModels()
     runtimeModelCatalog = {
       key,
-      options: models.map((model) => ({
-        id: model.value,
-        sdkModel: model.value === 'default' ? null : model.value,
-        displayName: model.displayName,
-        description: model.description,
-        isDefault: model.value === 'default',
-        ...(model.supportedEffortLevels ? { efforts: model.supportedEffortLevels } : {}),
-      })),
+      options: models.map((model) => {
+        const precise = modelNameFromResolved(model.resolvedModel)
+        return {
+          id: model.value,
+          sdkModel: model.value === 'default' ? null : model.value,
+          // 选择仍传原生别名，CLI 升级后别名自动指向新型号；只有显示名带精确版本。
+          displayName: precise
+            ? model.value === 'default'
+              ? `Default · ${precise}`
+              : precise
+            : model.displayName,
+          description: model.description,
+          isDefault: model.value === 'default',
+          ...(model.supportedEffortLevels ? { efforts: model.supportedEffortLevels } : {}),
+        }
+      }),
     }
   } catch (error) {
     debugLog('model.catalog.failed', {
