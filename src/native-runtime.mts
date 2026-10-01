@@ -38,14 +38,13 @@ if (!process.env.ANTHROPIC_BETAS) {
 //   * droppable_in_priority TypeError loop — JS Options is a stable type
 //   * rate_limit_event parse-gap fallback — JS SDK first-class
 //
-// Auth: relies on the host having `claude` CLI auth set up (claude /login or
-// ANTHROPIC_API_KEY). The SDK shells out to the bundled claude-code binary
-// installed via optionalDependencies.
+// CLI 来自宿主安装；Worker 仍通过独立 CLAUDE_CONFIG_DIR 提供配置和认证。
 
 import type { OnElicitation, Query } from '@anthropic-ai/claude-agent-sdk'
 import { type ApprovalPolicy, allowsApproval, toolApprovalFlow } from './approval-policy.mjs'
 import { dynamicToolServer } from './dynamic-tools.mjs'
 import { goalToolServer, isGoalTool } from './goal-tools.mjs'
+import { hostClaudeExecutable } from './host-claude.mjs'
 import { jsonSchemaValidator } from './json-schema.mjs'
 import { sdkMcpStartupEnvironment } from './mcp-config.mjs'
 import { appendNativeContext, type ContextInjection } from './native-context.mjs'
@@ -504,6 +503,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
       prompt,
       options: {
         abortController: abort,
+        pathToClaudeCodeExecutable: hostClaudeExecutable(),
         cwd: process.cwd(),
         settingSources: ['user'],
         tools: [],
@@ -584,6 +584,7 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
     const reservedGoalTools = new Set<string>()
     const opts: Record<string, unknown> = {
       abortController: abort,
+      pathToClaudeCodeExecutable: hostClaudeExecutable(),
       includePartialMessages: true,
       includeHookEvents: true,
       cwd: context.cwd,
@@ -750,9 +751,6 @@ export class NativeClaudeRuntime implements ClaudeRuntime {
         ? { append: context.systemPromptAddendum.trim() }
         : {}),
     }
-
-    // CLI binary override (for users pinning a specific claude-code build).
-    if (process.env.CLAUDE_CODEX_CLI) throw new Error('必须使用固定 SDK 随包的 Claude CLI')
 
     void sdk // keep parameter referenced for future SDK-version-gated options
     return opts

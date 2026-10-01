@@ -297,6 +297,7 @@ export class OAuthDaemonFixture {
           CODEX_HOME: join(home, 'codex'),
           CLAUDE_CODEX_HOME: join(home, 'adapter'),
           CLAUDE_CONFIG_DIR: join(home, 'claude'),
+          CLAUDE_CODEX_CLI: process.env.CLAUDE_CODEX_CLI,
           ANTHROPIC_API_KEY: 'test-not-a-secret',
           ANTHROPIC_BASE_URL: endpoint,
           CLAUDE_CODEX_RUNTIME: 'agent-sdk-sidecar',

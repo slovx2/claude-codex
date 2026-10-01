@@ -17,6 +17,10 @@ jobs:
           node-version: 24.14.0
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: Install pinned host Claude CLI for SDK tests
+        run: |
+          npm install --prefix .artifacts/host-cli --save-exact @anthropic-ai/claude-code@2.1.282 --no-audit --no-fund
+          echo "CLAUDE_CODEX_CLI=${GITHUB_WORKSPACE}/.artifacts/host-cli/node_modules/.bin/claude" >> "${GITHUB_ENV}"
       - run: npm install --global @openai/codex@0.157.1 --no-audit --no-fund
       - run: codex app-server generate-json-schema --experimental --out .artifacts/schema
       - run: CODEX_REAL="$(command -v codex)" npm run check:rust-protocol-fixtures

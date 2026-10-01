@@ -109,6 +109,7 @@ export CLAUDE_CODEX_NODE="/absolute/path/to/node"
 | `CLAUDE_CODEX_COMPAT_VERSION` | Codex app-server version advertised (default `0.142.3`). |
 | `CLAUDE_CODEX_VERSION_SUFFIX` | Tag after the version to distinguish the adapter from real codex (default `claude-codex`; set `""` to behave exactly like upstream codex). |
 | `CODEX_REAL` | Real Codex CLI for non-app-server commands / `codex` passthrough. |
+| `CLAUDE_CODEX_CLI` | 宿主 Claude Code 可执行文件，默认从 PATH 查找 claude；Worker 从 TYRS_HAND_WORKER_CLAUDE_CLI 注入。运行时诊断要求固定 CLI 2.1.282，配置仍由独立 CLAUDE_CONFIG_DIR 提供。 |
 | `CLAUDE_CODEX_RUNTIME_TYPE` | Active backend route. |
 | `CLAUDE_CODEX_PROVIDER` | Provider descriptor id (`claude-code` or `codex`) mapped only to existing runtime behavior. |
 | `CLAUDE_CODEX_AGENT_LOOP` | Agent-loop id (`native-claude-code-sdk` or `codex-jsonl-proxy`) mapped only to existing runtime behavior. |

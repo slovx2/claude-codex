@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import type { Options, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import { hostClaudeExecutable } from './host-claude.mjs'
 import type { NativeProcess } from './native-process.mjs'
 import { ProtocolError } from './protocol-contract.mjs'
 
@@ -126,6 +127,7 @@ export async function appendNativeContext(
     throw new ProtocolError(-32000, '原生会话缺失，不能丢弃历史后追加上下文')
   abort.signal.throwIfAborted()
   const options: Options = {
+    pathToClaudeCodeExecutable: hostClaudeExecutable(),
     cwd: context.cwd,
     ...(context.model ? { model: context.model } : {}),
     abortController: abort,

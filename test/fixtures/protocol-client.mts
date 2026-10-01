@@ -41,6 +41,7 @@ export class ProtocolClient {
       CODEX_HOME: join(home, 'codex'),
       CLAUDE_CODEX_HOME: join(home, 'adapter'),
       CLAUDE_CONFIG_DIR: join(home, 'claude'),
+      CLAUDE_CODEX_CLI: process.env.CLAUDE_CODEX_CLI,
       ...(auth === 'oauth'
         ? { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-test-not-a-secret' }
         : { ANTHROPIC_API_KEY: 'test-not-a-secret' }),
