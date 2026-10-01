@@ -1,0 +1,122 @@
+import assert from 'node:assert/strict'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import test from 'node:test'
+import { dispatch } from '../src/protocol.mjs'
+import { PiServer } from '../src/server.mjs'
+import { createUi } from '../src/ui.mjs'
+import { assertResponse, assertServerRequest } from './schema.mjs'
+
+test('Pi 原生菜单保持标签，问答必须阻塞且不复制选项描述', async () => {
+  const requests: any[] = []
+  const ui = createUi(
+    async (method, params) => {
+      const request = { threadId: 't', turnId: 'turn', itemId: 'item', ...params }
+      assertServerRequest(method, request)
+      assert.throws(() => assertServerRequest(method, { ...request, isBlocking: undefined }))
+      requests.push(request)
+      return { answers: { [params.questions[0].id]: { answers: ['1. Blue — Write Blue'] } } }
+    },
+    () => {},
+  )
+  assert.equal(
+    await ui.select('Choose', ['1. Blue — Write Blue', 'Other (free-form)']),
+    '1. Blue — Write Blue',
+  )
+  await ui.input('Name')
+  await ui.confirm('Continue', 'Confirm choice')
+  await ui.editor('Edit', 'Original text')
+  assert.equal(requests.length, 4)
+  assert.deepEqual(requests[0].questions[0].options, [
+    { label: '1. Blue — Write Blue', description: '' },
+    { label: 'Other (free-form)', description: '' },
+  ])
+  assert.ok(requests.every((r) => r.isBlocking === true))
+})
+
+test('Pi runtime/info 使用实际版本并通过扩展 schema，拒绝版本漂移', async () => {
+  const info = await dispatch(
+    {} as PiServer,
+    { id: 'p', send() {}, close() {} },
+    'runtime/info',
+    {},
+  )
+  assertResponse('runtime/info', info)
+  for (const change of [
+    { sdkVersion: '0.3.282' },
+    { cliBuild: '0.99.2' },
+    { nodeVersion: '24.19.0' },
+    { pluginVersions: {} },
+    { pluginVersions: { ...info.pluginVersions, '@gotgenes/pi-subagents': '21.8.2' } },
+  ])
+    assert.throws(() => assertResponse('runtime/info', { ...info, ...change }))
+})
+
+test('原生父子投影支持顶层、直接父级、所有后代和重启，metadata 返回真实 thread', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-desktop-projection-'))
+  const previous = process.env.PI_CODING_AGENT_DIR
+  process.env.PI_CODING_AGENT_DIR = join(root, 'agent')
+  const sessions = join(root, 'agent', 'sessions')
+  await mkdir(sessions, { recursive: true })
+  const ids = [1, 2, 3, 4].map((n) => `00000000-0000-4000-8000-00000000000${n}`)
+  for (const [i, id] of ids.entries()) {
+    const parentSession =
+      i === 1 || i === 2 ? ids[i - 1] : i === 3 ? join(sessions, `${ids[0]}.jsonl`) : undefined
+    await writeFile(
+      join(sessions, `${id}.jsonl`),
+      `${JSON.stringify({ type: 'session', version: 3, id, cwd: root, timestamp: '2026-10-01T00:00:00Z', parentSession })}\n`,
+    )
+  }
+  let server = new PiServer(join(root, 'adapter'))
+  const peer = { id: 'p', send() {}, close() {} }
+  const call = async (method: string, params: any = {}) => {
+    const result = await dispatch(server, peer, method, params)
+    assertResponse(method, result)
+    return result
+  }
+  try {
+    for (let pass = 0; pass < 2; pass++) {
+      const top = await call('thread/list')
+      assert.deepEqual(new Set(top.data.map((t: any) => t.id)), new Set([ids[0], ids[3]]))
+      const descendants = await call('thread/list', {
+        ancestorThreadId: ids[0],
+        sourceKinds: ['subAgentThreadSpawn'],
+      })
+      assert.deepEqual(new Set(descendants.data.map((t: any) => t.id)), new Set([ids[1], ids[2]]))
+      assert.equal(
+        descendants.data.find((t: any) => t.id === ids[2]).source.subAgent.thread_spawn.depth,
+        2,
+      )
+      assert.deepEqual(
+        (await call('thread/list', { parentThreadId: ids[0] })).data.map((t: any) => t.id),
+        [ids[1]],
+      )
+      assert.equal((await call('thread/list', { sourceKinds: ['cli'] })).data.length, 0)
+      await assert.rejects(
+        call('thread/list', { parentThreadId: ids[0], ancestorThreadId: ids[0] }),
+        /不能同时/,
+      )
+      const result = await call('thread/metadata/update', {
+        threadId: ids[0],
+        gitInfo: { branch: 'main' },
+        daybreakEnabled: false,
+      })
+      assert.equal(result.thread.id, ids[0])
+      assert.equal(result.thread.gitInfo.branch, 'main')
+      assert.equal(result.thread.daybreakEnabled, false)
+      assert.deepEqual(result.thread.turns, [])
+      assert.throws(() => assertResponse('thread/metadata/update', {}))
+      assert.equal(server.sessions.size, 0, '列表和 metadata 不创建执行会话')
+      if (pass === 0) {
+        await server.close()
+        server = new PiServer(join(root, 'adapter'))
+      }
+    }
+  } finally {
+    await server.close()
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR
+    else process.env.PI_CODING_AGENT_DIR = previous
+    await rm(root, { recursive: true, force: true })
+  }
+})

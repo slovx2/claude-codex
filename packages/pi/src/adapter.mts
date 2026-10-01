@@ -1,0 +1,115 @@
+#!/usr/bin/env node
+import { spawnSync } from 'node:child_process'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { ProcessRpc } from '../../shared/src/process-rpc.mjs'
+import { codexCliVersion } from '../../shared/src/runtime-version.mjs'
+import {
+  normalizeListenUrl,
+  parseProxySockArg,
+  runProxy,
+  startStdioTransport,
+  startWebSocketTransport,
+} from '../../shared/src/transports.mjs'
+import type { RpcPeer } from '../../shared/src/types.mjs'
+import { PiServer } from './server.mjs'
+import { runtimeInfo, validateInstalledVersions, versions } from './versions.mjs'
+
+async function main(): Promise<void> {
+  validateInstalledVersions()
+  const args = process.argv.slice(2)
+  if (args[0] === '--version' || args[0] === '-V') {
+    process.stdout.write(`${codexCliVersion(versions.protocol, 'pi-codex')}\n`)
+    return
+  }
+  if (args[0] === '--runtime-info') {
+    const cli = spawnSync(process.env.PI_CLI ?? 'pi', ['--version'], {
+      encoding: 'utf8',
+      timeout: 10000,
+    })
+    if (cli.error || cli.status !== 0 || cli.stdout.trim() !== versions.cli)
+      throw new Error(`需要用户安装的 Pi CLI ${versions.cli}；可用 PI_CLI 指定路径`)
+    if (process.versions.node !== versions.node) throw new Error(`需要 Node ${versions.node}`)
+    process.stdout.write(`${JSON.stringify({ ...runtimeInfo(), cliBuild: cli.stdout.trim() })}\n`)
+    return
+  }
+  if (args[0] === '--pty-self-check') {
+    await ptyCheck()
+    return
+  }
+  if (args[0] !== 'app-server')
+    throw new Error('用法: pi-codex app-server [--listen stdio://|unix://PATH|ws://HOST:PORT]')
+  if (args.includes('proxy')) {
+    await runProxy(parseProxySockArg(args.slice(args.indexOf('proxy') + 1)))
+    return
+  }
+  const listenIndex = args.indexOf('--listen')
+  const listen = normalizeListenUrl(
+    listenIndex < 0 ? 'stdio://' : (args[listenIndex + 1] ?? 'stdio://'),
+  )
+  if (listen === 'off') return
+  const server = new PiServer(
+    resolve(process.env.PI_ADAPTER_HOME ?? join(homedir(), '.local/share/tyrs-hand/pi')),
+  )
+  let transport: Awaited<ReturnType<typeof startWebSocketTransport>>
+  let closing = false
+  const close = async () => {
+    if (closing) return
+    closing = true
+    await server.close()
+    await transport?.close()
+  }
+  const onClose = (peer: RpcPeer) => {
+    server.closePeer(peer)
+    if (listen === 'stdio://') void close()
+  }
+  transport =
+    listen === 'stdio://'
+      ? startStdioTransport((peer, message) => server.handle(peer, message), onClose)
+      : await startWebSocketTransport(
+          listen,
+          (peer, message) => server.handle(peer, message),
+          onClose,
+        )
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'])
+    process.once(signal, () => void close().then(() => process.exit(0)))
+}
+async function ptyCheck(): Promise<void> {
+  const rpc = new ProcessRpc((command) => command)
+  let output = '',
+    done: (value: any) => void = () => {}
+  const ended = new Promise<any>((resolve) => {
+    done = resolve
+  })
+  const peer: RpcPeer = {
+    id: 'pi-pty-check',
+    close() {},
+    send(message) {
+      if (!('method' in message)) return
+      const p = message.params as any
+      if (message.method === 'process/outputDelta')
+        output += Buffer.from(p.deltaBase64, 'base64').toString()
+      if (message.method === 'process/exited') done(p)
+    },
+  }
+  const timeout = setTimeout(() => done({ exitCode: -1 }), 10000)
+  try {
+    await rpc.start(peer, 'process', {
+      processHandle: 'check',
+      cwd: process.cwd(),
+      tty: true,
+      size: { rows: 7, cols: 13 },
+      command: ['/bin/sh', '-c', 'test -t 0 && test -t 1 && stty size'],
+    })
+    const result = await ended
+    if (result.exitCode !== 0 || !output.includes('7 13')) throw new Error('Pi PTY 自检失败')
+    process.stdout.write('pty-self-check ok\n')
+  } finally {
+    clearTimeout(timeout)
+    await rpc.close()
+  }
+}
+main().catch((error) => {
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+  process.exitCode = 1
+})
