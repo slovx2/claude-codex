@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { FilesystemRpc } from '../src/filesystem-rpc.mjs'
+import { FilesystemRpc } from '../packages/shared/src/filesystem-rpc.mjs'
 import { ProtocolError } from '../src/protocol-contract.mjs'
 import type { RpcPeer } from '../src/types.mjs'
 

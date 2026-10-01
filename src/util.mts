@@ -11,7 +11,19 @@ import {
 } from 'node:fs'
 import { homedir, platform, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import {
+  CODEX_PROTOCOL_VERSION,
+  codexCliVersion as formatCliVersion,
+  codexUserAgent as formatUserAgent,
+} from '../packages/shared/src/runtime-version.mjs'
+
+export { platformFamily, platformOs } from '../packages/shared/src/runtime-version.mjs'
+
+import { setSharedLogger } from '../packages/shared/src/util.mjs'
 import type { ImageInput } from './types.mjs'
+
+// 所有 Claude 入口都经过此模块，不依赖 adapter main() 才启用共享模块日志。
+setSharedLogger(debugLog)
 
 export function nowSeconds(): number {
   return Math.floor(Date.now() / 1000)
@@ -110,24 +122,9 @@ function numericEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
 }
 
-export function platformFamily(): string {
-  return platform() === 'win32' ? 'windows' : 'unix'
-}
-
-export function platformOs(): string {
-  switch (platform()) {
-    case 'darwin':
-      return 'macos'
-    case 'win32':
-      return 'windows'
-    default:
-      return platform()
-  }
-}
-
 // CLI 探测与 initialize 使用同一协议版本；升级时同步 schema 和 codex-shim。
 // 主机可以用 CLAUDE_CODEX_COMPAT_VERSION 显式覆盖报告版本。
-const DEFAULT_CODEX_COMPAT_VERSION = '0.157.1'
+const DEFAULT_CODEX_COMPAT_VERSION = CODEX_PROTOCOL_VERSION
 
 export function codexCompatVersion(): string {
   return (
@@ -148,19 +145,11 @@ export function codexVersionSuffix(): string {
 }
 
 export function codexCliVersion(): string {
-  const suffix = codexVersionSuffix()
-  // Number first so a semver probe still extracts the bare version.
-  return `codex-cli ${codexCompatVersion()}${suffix ? ` (${suffix})` : ''}`
+  return formatCliVersion(codexCompatVersion(), codexVersionSuffix())
 }
 
 export function codexUserAgent(clientName: string, clientVersion: string): string {
-  const name = clientName.trim() || 'codex-app'
-  const version = clientVersion.trim() || 'unknown'
-  const cpu =
-    process.arch === 'x64' ? 'x86_64' : process.arch === 'arm64' ? 'aarch64' : process.arch
-  // The originator field (real codex puts a build tag here) carries our marker.
-  const originator = codexVersionSuffix() || 'unknown'
-  return `${name}/${codexCompatVersion()} (${platformOs()}; ${cpu}) ${originator} (${name}; ${version})`
+  return formatUserAgent(clientName, clientVersion, codexCompatVersion(), codexVersionSuffix())
 }
 
 const unavailableFileImagePrompt =

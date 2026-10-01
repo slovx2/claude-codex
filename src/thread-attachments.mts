@@ -1,4 +1,4 @@
-import { catalogPagination } from './catalog-pagination.mjs'
+import { catalogPagination } from '../packages/shared/src/catalog-pagination.mjs'
 import { ProtocolError, requiredString } from './protocol-contract.mjs'
 import type { SessionStore } from './store.mjs'
 import type { JsonValue } from './types.mjs'

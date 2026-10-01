@@ -1,19 +1,20 @@
 #!/usr/bin/env node
 import { chmodSync, existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { buildInfo } from './build-info.mjs'
-import { ProcessRpc } from './process-rpc.mjs'
-import { createRuntime } from './runtime-factory.mjs'
-import { CodexClaudeAppServer } from './server.mjs'
-import { loadRuntimeModelCatalog } from './server-helpers.mjs'
-import { SessionStore } from './store.mjs'
+import { ProcessRpc } from '../packages/shared/src/process-rpc.mjs'
 import {
   normalizeListenUrl,
   parseProxySockArg,
   runProxy,
   startStdioTransport,
   startWebSocketTransport,
-} from './transports.mjs'
+} from '../packages/shared/src/transports.mjs'
+import { buildInfo } from './build-info.mjs'
+import { sandboxCommand } from './command-sandbox.mjs'
+import { createRuntime } from './runtime-factory.mjs'
+import { CodexClaudeAppServer } from './server.mjs'
+import { loadRuntimeModelCatalog } from './server-helpers.mjs'
+import { SessionStore } from './store.mjs'
 import type { RpcPeer } from './types.mjs'
 import { debugLog, defaultSocketPath, ensureParent } from './util.mjs'
 
@@ -189,7 +190,7 @@ async function main(): Promise<void> {
 
 // 打包后的自检：用假 peer 驱动 ProcessRpc 跑一次真实 PTY，确认 pty-bridge.py 随包可用。
 async function ptySelfCheck(): Promise<void> {
-  const processes = new ProcessRpc()
+  const processes = new ProcessRpc(sandboxCommand)
   let output = ''
   let notify: (params: Record<string, unknown>) => void = () => {}
   const exited = new Promise<Record<string, unknown>>((resolve) => {

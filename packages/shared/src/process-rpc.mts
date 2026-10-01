@@ -3,10 +3,9 @@ import { existsSync } from 'node:fs'
 import { constants as osConstants } from 'node:os'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { sandboxCommand } from './command-sandbox.mjs'
+import { commandEnv } from './command-env.mjs'
 import { decodeBase64 } from './filesystem-rpc.mjs'
 import { ProtocolError } from './protocol-contract.mjs'
-import { commandEnv } from './server-helpers.mjs'
 import type { RpcPeer } from './types.mjs'
 import { debugLog } from './util.mjs'
 
@@ -127,9 +126,11 @@ function spawnFailureMessage(kind: Kind, detail: string): ProtocolError {
 function ptyBridgePath(): string {
   const here = dirname(fileURLToPath(import.meta.url))
   return (
-    [resolve(here, '../../scripts/pty-bridge.py'), resolve(here, '../scripts/pty-bridge.py')].find(
-      existsSync,
-    ) ?? ''
+    [
+      resolve(here, '../../../../scripts/pty-bridge.py'),
+      resolve(here, '../../../../../scripts/pty-bridge.py'),
+      resolve(here, '../../../scripts/pty-bridge.py'),
+    ].find(existsSync) ?? ''
   )
 }
 
@@ -182,12 +183,28 @@ export class ProcessRpc {
   private readonly running = new Set<Promise<void>>()
   private generated = 0
 
+  constructor(
+    privateCommandPolicy: (
+      command: string[],
+      cwd: string,
+      params: Record<string, unknown>,
+    ) => string[],
+  ) {
+    this.commandPolicy = privateCommandPolicy
+  }
+
+  private readonly commandPolicy: (
+    command: string[],
+    cwd: string,
+    params: Record<string, unknown>,
+  ) => string[]
+
   async start(peer: RpcPeer, kind: Kind, params: Record<string, unknown>): Promise<unknown> {
     const plan = this.resolvePlan(kind, params)
     const records = this.owned.get(peer.id) ?? new Map<string, ProcessRecord>()
     if (records.has(plan.key)) throw new ProtocolError(-32600, duplicateMessage(kind, plan))
     const command =
-      kind === 'command' ? sandboxCommand(plan.command, plan.cwd, params) : plan.command
+      kind === 'command' ? this.commandPolicy(plan.command, plan.cwd, params) : plan.command
     const argv = plan.tty
       ? [
           PTY_PYTHON,

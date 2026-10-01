@@ -3,6 +3,12 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { catalogPagination } from '../packages/shared/src/catalog-pagination.mjs'
+import { FilesystemRpc } from '../packages/shared/src/filesystem-rpc.mjs'
+import { FuzzyFileSearch, FuzzySearchSessions } from '../packages/shared/src/fuzzy-session.mjs'
+import { gitDiffToRemote as computeGitDiffToRemote } from '../packages/shared/src/git-diff-remote.mjs'
+import { ProcessRpc } from '../packages/shared/src/process-rpc.mjs'
+import { projectRequest } from '../packages/shared/src/project-rpc.mjs'
 import { allowsApproval } from './approval-policy.mjs'
 import {
   backgroundTerminals,
@@ -10,7 +16,6 @@ import {
   paginateBackgroundTerminals,
 } from './background-terminals.mjs'
 import { buildInfo } from './build-info.mjs'
-import { catalogPagination } from './catalog-pagination.mjs'
 import { listClaudeHooks } from './claude-capabilities.mjs'
 import {
   applyConfigEdits,
@@ -21,9 +26,6 @@ import {
 } from './config-store.mjs'
 import { dynamicToolResult } from './dynamic-tool-result.mjs'
 import { experimentalFeatureList, experimentalFeatureSet } from './experimental-features.mjs'
-import { FilesystemRpc } from './filesystem-rpc.mjs'
-import { FuzzyFileSearch, FuzzySearchSessions } from './fuzzy-session.mjs'
-import { gitDiffToRemote as computeGitDiffToRemote } from './git-diff-remote.mjs'
 import { GoalController } from './goal-controller.mjs'
 import { readMcpConfig } from './mcp.mjs'
 import { sdkMcpServers } from './mcp-config.mjs'
@@ -39,8 +41,6 @@ import {
   parsePermissionGrant,
   permissionToolName,
 } from './permission-grants.mjs'
-import { ProcessRpc } from './process-rpc.mjs'
-import { projectRequest } from './project-rpc.mjs'
 import {
   ProtocolError,
   pageRecords,
@@ -260,7 +260,7 @@ export class CodexClaudeAppServer {
   // 与固定 Codex 一致：会话授权仅在当前 runtime 运行代内跨 Turn 有效。
   private permissionSessionGrants = new Map<string, PermissionOverlay>()
   private commandProcesses = new Map<string, ChildProcess>()
-  private readonly processes = new ProcessRpc()
+  private readonly processes = new ProcessRpc(sandboxCommand)
   private readonly filesystem = new FilesystemRpc()
   private readonly mcp = new McpRpc()
   private readonly skills = new SkillsRpc()
@@ -5633,3 +5633,5 @@ export class CodexClaudeAppServer {
     return snapshot
   }
 }
+
+import { sandboxCommand } from './command-sandbox.mjs'

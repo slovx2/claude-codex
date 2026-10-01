@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { commandEnv } from './server-helpers.mjs'
+import { commandEnv } from './command-env.mjs'
 
 // 移植 Codex 0.157.1 codex-rs/git-utils/src/info.rs 的 git_diff_to_remote：
 // 以最近的、同时存在于远端的提交为基准，返回与它的 diff（含未跟踪文件）。
