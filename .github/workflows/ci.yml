@@ -6,16 +6,29 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      macos_worker:
+        description: 手动恢复 macOS Worker 验收（默认验证 Linux 制品平台）
+        type: boolean
+        default: false
 
 jobs:
   check:
-    runs-on: macos-14
+    # 与主库已确认的 Linux 优先验收范围一致；macOS 回环 EPERM 诊断保留手动入口。
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.macos_worker && 'macos-14' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24.14.0
           cache: npm
+      - name: Prepare Linux sandbox dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends bubblewrap=0.9.0-1ubuntu0.3 socat=1.8.0.0-4ubuntu0.1
+          command -v unshare ip bwrap socat
       - run: npm ci --no-audit --no-fund
       - name: Install pinned host Claude CLI for SDK tests
         run: |
