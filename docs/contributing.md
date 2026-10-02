@@ -17,7 +17,7 @@ npm run build        # tsc -> dist/ (production artifact)
 npm run typecheck    # tsc --noEmit
 npm run check        # biome format + lint (read-only)
 npm run check:fix    # biome auto-fix
-npm test             # build + node --test dist/test/*.mjs
+npm test             # build + node --test packages/claude/dist/claude/test/*.mjs
 ```
 
 ## Conventions
@@ -37,7 +37,7 @@ npm test             # build + node --test dist/test/*.mjs
 
 ## Why `.mts` / `.mjs`?
 
-The adapter is launched directly with `node dist/src/adapter.mjs` on remote
+The adapter is launched directly with `node packages/claude/dist/claude/src/adapter.mjs` on remote
 hosts. Compiling `.mts` → `.mjs` makes every file unambiguously ESM at the file
 level (Node always treats `.mjs` as ESM, regardless of any `package.json`), so
 the deployed artifact needs only `node` — no TS toolchain, no dependence on a
@@ -51,7 +51,7 @@ the deployed artifact needs only `node` — no TS toolchain, no dependence on a
 - `src/store.mts` — SQLite thread/turn persistence (`node:sqlite`).
 - `src/*-runtime.mts` + `runtime-factory.mts` — pluggable Claude backends.
 - `scripts/codex-shim` — the `PATH` shim Codex App invokes.
-- `scripts/claude-codex-mode` — host helper to switch backends.
+- `scripts/codex-harness-adapter-mode` — host helper to switch backends.
 - `test/` — `node:test` suites against `dist/`.
 
 The repo also ships progressive `AGENTS.md` files (root + `src/` + `scripts/` +

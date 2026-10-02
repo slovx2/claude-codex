@@ -16,13 +16,15 @@ check('node >= 24 with stable node:sqlite', () => {
 })
 
 check('built adapter exists', () => {
-  const adapter = process.env.CLAUDE_CODEX_ADAPTER || resolve('dist/src/adapter.mjs')
+  const adapter =
+    process.env.CHA_CLAUDE_ADAPTER || resolve('packages/claude/dist/claude/src/adapter.mjs')
   if (!existsSync(adapter)) throw new Error(`${adapter} does not exist; run npm run build`)
 })
 
 check('shim version probe', () => {
   const result = run(resolve('scripts/codex-shim'), ['--version'], {
-    CLAUDE_CODEX_ADAPTER: process.env.CLAUDE_CODEX_ADAPTER || resolve('dist/src/adapter.mjs'),
+    CHA_CLAUDE_ADAPTER:
+      process.env.CHA_CLAUDE_ADAPTER || resolve('packages/claude/dist/claude/src/adapter.mjs'),
   })
   if (!/codex-cli/.test(result.stdout))
     throw new Error(`unexpected version output: ${result.stdout}`)
@@ -51,7 +53,7 @@ if (runtimeType === 'agent-http' || runtimeType === 'agentapi')
 
 if (runtimeType === 'claude-p')
   check('claude-p command', () => {
-    const command = process.env.CLAUDE_CODEX_CLAUDE_P_COMMAND || process.env.CLAUDE_P || 'claude-p'
+    const command = process.env.CHA_CLAUDE_CLAUDE_P_COMMAND || process.env.CLAUDE_P || 'claude-p'
     run(command, ['--version'])
   })
 
@@ -111,11 +113,11 @@ function requireModule(name) {
 }
 
 function resolveRuntimeType() {
-  if (process.env.CLAUDE_CODEX_MOCK === '1') return 'mock'
+  if (process.env.CHA_CLAUDE_MOCK === '1') return 'mock'
   const raw = (
-    process.env.CLAUDE_CODEX_RUNTIME_TYPE ||
-    process.env.CLAUDE_CODEX_RUNTIME ||
-    process.env.CLAUDE_CODEX_BACKEND ||
+    process.env.CHA_CLAUDE_RUNTIME_TYPE ||
+    process.env.CHA_CLAUDE_RUNTIME ||
+    process.env.CHA_CLAUDE_BACKEND ||
     ''
   )
     .trim()
@@ -139,18 +141,18 @@ function resolveRuntimeType() {
   if (['claude-p', 'claudep', 'pty-transcript'].includes(raw)) return 'claude-p'
   if (['codex', 'native-codex', 'real-codex', 'native', 'real'].includes(raw)) return 'codex'
   if (raw === 'mock') return 'mock'
-  throw new Error(`unknown CLAUDE_CODEX_RUNTIME_TYPE: ${raw}`)
+  throw new Error(`unknown CHA_CLAUDE_RUNTIME_TYPE: ${raw}`)
 }
 
 function httpBaseUrl() {
   const value =
-    process.env.CLAUDE_CODEX_HTTP_BASE_URL ||
-    process.env.CLAUDE_CODEX_AGENT_HTTP_URL ||
-    process.env.CLAUDE_CODEX_AGENTAPI_URL ||
+    process.env.CHA_CLAUDE_HTTP_BASE_URL ||
+    process.env.CHA_CLAUDE_AGENT_HTTP_URL ||
+    process.env.CHA_CLAUDE_AGENTAPI_URL ||
     'http://127.0.0.1:3284'
   return value.endsWith('/') ? value.slice(0, -1) : value
 }
 
 function resolveClaudeCommand() {
-  return process.env.CLAUDE_CODEX_CLI || 'claude'
+  return process.env.CHA_CLAUDE_CLI || 'claude'
 }

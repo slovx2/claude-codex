@@ -3,7 +3,9 @@
     "target": "ES2023",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2023"],
+    "lib": [
+      "ES2023"
+    ],
     "rootDir": ".",
     "outDir": "dist",
     "strict": true,
@@ -19,7 +21,11 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src/**/*.mts", "test/**/*.mts", "packages/shared/src/**/*.mts"]
+  "include": [
+    "packages/shared/src/**/*.mts"
+  ]
 }

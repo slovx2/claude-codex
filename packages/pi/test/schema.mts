@@ -1,11 +1,9 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { Ajv } from 'ajv'
+import { protocolDirectory } from '../../shared/src/protocol-path.mjs'
 
-const root = resolve(
-  process.env.CODEX_SCHEMA_DIR ??
-    '../../../tyrs-hand/protocol/codex-app-server/0.157.1/json-schema',
-)
+const root = resolve(process.env.CODEX_SCHEMA_DIR ?? protocolDirectory())
 const files = new Map<string, string>()
 function walk(dir: string): void {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {

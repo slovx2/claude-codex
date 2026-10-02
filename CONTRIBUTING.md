@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve Claude Codex Adapter. This root guide is the GitHub
+Thanks for helping improve Codex Harness Adapter. This root guide is the GitHub
 entry point; the full contributor guide lives in [docs/contributing.md](docs/contributing.md).
 
 ## Before you start

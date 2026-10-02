@@ -2,7 +2,7 @@
 
 ## Summary
 
-Claude Codex Adapter should separate three concerns that are currently easy to
+Codex Harness Adapter should separate three concerns that are currently easy to
 discuss as one vague feature:
 
 - **Runtime backends** execute a turn through Claude Code, Codex CLI, or a bridge.
@@ -283,8 +283,8 @@ state, fixtures, or Codex App config responses.
 
 - Should provider and loop descriptors live in `src/runtime-config.mts`, a new
   `src/provider-descriptors.mts`, or generated config schema?
-- Should `CLAUDE_CODEX_RUNTIME_TYPE` remain the primary selector, or should a
-  later `CLAUDE_CODEX_PROVIDER` plus `CLAUDE_CODEX_AGENT_LOOP` pair become the
+- Should `CHA_CLAUDE_RUNTIME_TYPE` remain the primary selector, or should a
+  later `CHA_CLAUDE_PROVIDER` plus `CHA_CLAUDE_AGENT_LOOP` pair become the
   stable user-facing model?
 - Which credential source labels should be considered stable public API?
 - Should organization gateway support require an allowlist of header env var

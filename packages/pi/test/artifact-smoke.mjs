@@ -109,13 +109,13 @@ try {
     join(agent, 'settings.json'),
     JSON.stringify({ defaultProvider: 'gate', defaultModel: 'gate', retry: { enabled: false } }),
   )
-  child = spawn(join(runtime, 'bin', 'pi-codex'), ['app-server'], {
+  child = spawn(join(runtime, 'bin', 'codex-harness-adapter-pi'), ['app-server'], {
     cwd,
     env: {
       PATH: '/usr/bin:/bin',
       HOME: home,
       PI_CODING_AGENT_DIR: agent,
-      PI_ADAPTER_HOME: join(root, 'state'),
+      CHA_PI_HOME: join(root, 'state'),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   })

@@ -4,17 +4,17 @@ import { spawn } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { codexCompatVersion } from '../dist/src/util.mjs'
+import { codexCompatVersion } from '../packages/claude/dist/claude/src/util.mjs'
 
-const home = await mkdtemp(join(tmpdir(), 'claude-codex-capability-probe-'))
-const adapter = resolve('dist/src/adapter.mjs')
+const home = await mkdtemp(join(tmpdir(), 'codex-harness-adapter-capability-probe-'))
+const adapter = resolve('packages/claude/dist/claude/src/adapter.mjs')
 const expectedCompatVersion = codexCompatVersion()
 const proc = spawn(process.execPath, [adapter, 'app-server', '--listen', 'stdio://'], {
   stdio: ['pipe', 'pipe', 'pipe'],
   env: {
     ...process.env,
     CODEX_HOME: home,
-    CLAUDE_CODEX_MOCK: process.env.CLAUDE_CODEX_MOCK ?? '1',
+    CHA_CLAUDE_MOCK: process.env.CHA_CLAUDE_MOCK ?? '1',
     NODE_NO_WARNINGS: '1',
   },
 })

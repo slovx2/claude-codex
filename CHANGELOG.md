@@ -1,6 +1,6 @@
 # Changelog
 
-All notable public-facing changes for Claude Codex Adapter are summarized here.
+All notable public-facing changes for Codex Harness Adapter are summarized here.
 The project is still private in `package.json`; this file tracks release notes
 for maintainers preparing the next public release and does not change package
 versioning or publishing metadata.
@@ -11,7 +11,7 @@ versioning or publishing metadata.
 
 - Updated the adapter to advertise Codex app-server protocol v2 compatibility at
   the current pinned Codex CLI compatibility version, while keeping a
-  `claude-codex` suffix so hosts can distinguish the adapter from upstream
+  `codex-harness-adapter` suffix so hosts can distinguish the adapter from upstream
   Codex.
 - Expanded Codex App Remote coverage across thread lifecycle, turn envelopes,
   item streaming, approvals, MCP status, fuzzy file search sessions, Claude
@@ -56,7 +56,7 @@ versioning or publishing metadata.
   `config.provider_loop_config` field through `config/read`.
 - Added explicit provider/agent-loop selection for known descriptor ids and loop
   ids. Selection maps only to existing runtime backends, preserves legacy
-  runtime environment overrides and `CLAUDE_CODEX_MOCK=1` precedence, filters
+  runtime environment overrides and `CHA_CLAUDE_MOCK=1` precedence, filters
   raw saved selection keys from public `config/read`, and exposes sanitized
   selection metadata through `config.provider_loop_config.selection`.
 - Added tests proving built-in descriptors validate cleanly, unsupported
@@ -85,8 +85,8 @@ versioning or publishing metadata.
   descriptor and selection boundaries, supported credential ownership models,
   unsupported subscription/session/private endpoint/bypass behavior, and release
   verification expectations.
-- Documented provider selection configuration for `CLAUDE_CODEX_PROVIDER`,
-  `CLAUDE_CODEX_AGENT_LOOP`, saved provider-loop config keys, precedence rules,
+- Documented provider selection configuration for `CHA_CLAUDE_PROVIDER`,
+  `CHA_CLAUDE_AGENT_LOOP`, saved provider-loop config keys, precedence rules,
   and sanitized `config.provider_loop_config.selection` projection.
 - Documented the current shippable baseline: TypeScript remains the production
   path; Rust pieces are opt-in protocol boundary work; provider/loop descriptors

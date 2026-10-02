@@ -18,8 +18,8 @@ so non-interactive SSH sees them too:
 ```bash
 export PATH="$HOME/bin:$PATH"
 export ANTHROPIC_API_KEY="<your-anthropic-api-key>" # or sign in with `claude /login`
-export CLAUDE_CODEX_ADAPTER="/opt/claude-codex-adapter/dist/src/adapter.mjs"
-export CLAUDE_CODEX_NODE="/absolute/path/to/node" # optional
+export CHA_CLAUDE_ADAPTER="/opt/codex-harness-adapter/packages/claude/dist/claude/src/adapter.mjs"
+export CHA_CLAUDE_NODE="/absolute/path/to/node" # optional
 export CODEX_REAL="/usr/local/bin/codex.real"     # optional native-Codex fallback
 ```
 
@@ -52,14 +52,14 @@ mkdir -p ~/.local/npm-global
 ~/.local/npm-global/bin/claude /login        # interactive: claude.ai OAuth
 
 # 3. Adapter checkout + build.
-git clone https://github.com/fuergaosi233/claude-codex ~/claude-codex && cd ~/claude-codex
+git clone https://github.com/slovx2/codex-harness-adapter ~/codex-harness-adapter && cd ~/codex-harness-adapter
 npm install && npm run build
 
 # 4. Persist PATH + adapter pointers for non-interactive SSH.
 cat >>~/.zshenv <<'EOF'
 export PATH="$HOME/.local/npm-global/bin:$HOME/.local/node-v24.11.0-darwin-arm64/bin:$HOME/.local/bin:$PATH"
-export CLAUDE_CODEX_ADAPTER="$HOME/claude-codex/dist/src/adapter.mjs"
-export CLAUDE_CODEX_NODE="$HOME/.local/node-v24.11.0-darwin-arm64/bin/node"
+export CHA_CLAUDE_ADAPTER="$HOME/codex-harness-adapter/packages/claude/dist/claude/src/adapter.mjs"
+export CHA_CLAUDE_NODE="$HOME/.local/node-v24.11.0-darwin-arm64/bin/node"
 EOF
 cp scripts/codex-shim ~/.local/bin/codex && chmod +x ~/.local/bin/codex
 
@@ -75,7 +75,7 @@ adapter. Disconnecting reclaims the daemon so the adapter exits.
 The daemon owns the Unix socket while a client is connected. When the last
 client disconnects it shuts down after an idle grace period (deferred if a turn
 is still active; reconnecting during that window reattaches notifications). Tune
-with `CLAUDE_CODEX_IDLE_EXIT_MS` (default `15000`; `0` keeps it running).
+with `CHA_CLAUDE_IDLE_EXIT_MS` (default `15000`; `0` keeps it running).
 
 ## Quick remote probe
 

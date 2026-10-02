@@ -364,7 +364,7 @@ export class PiServer {
     )
       throw new ProtocolError(-32009, '会话已有活动回合')
     const turn: PiTurn = {
-      id: `tyrs:${randomUUID()}`,
+      id: `codex-harness-adapter:${randomUUID()}`,
       items: [],
       status: 'inProgress',
       error: null,

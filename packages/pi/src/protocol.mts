@@ -61,7 +61,7 @@ export async function dispatch(s: PiServer, peer: RpcPeer, method: string, p: an
           typeof p.clientInfo?.name === 'string' ? p.clientInfo.name : 'codex-app',
           typeof p.clientInfo?.version === 'string' ? p.clientInfo.version : 'unknown',
           versions.protocol,
-          'pi-codex',
+          'codex-harness-adapter-pi',
         ),
         codexHome: process.env.CODEX_HOME ?? getAgentDir(),
         platformFamily: platformFamily(),
@@ -321,7 +321,9 @@ export async function dispatch(s: PiServer, peer: RpcPeer, method: string, p: an
       const { text, images } = await promptInput(p.input)
       await active.live.session.steer(text, images)
       if (clientId) {
-        active.live.session.sessionManager.appendCustomEntry('tyrs-steer', { clientId })
+        active.live.session.sessionManager.appendCustomEntry('codex-harness-adapter-steer', {
+          clientId,
+        })
         active.pendingClientIds.push(clientId)
         s.store.setMeta(`steer:${p.threadId}`, clientId, { input: p.input, turnId: active.turn.id })
       }
@@ -527,7 +529,7 @@ async function nativeMutation(s: PiServer, peer: RpcPeer, method: string, p: any
     branch.find(
       (e) =>
         e.type === 'custom' &&
-        e.customType === 'tyrs-turn' &&
+        e.customType === 'codex-harness-adapter-turn' &&
         (e.data as any)?.id === firstRemoved.id,
     ) ?? branch.find((e) => `native:${e.id}` === firstRemoved.id)
   if (!entry) throw new ProtocolError(-32602, '无法定位原生会话边界')
@@ -536,7 +538,7 @@ async function nativeMutation(s: PiServer, peer: RpcPeer, method: string, p: any
     session.sessionManager.resetLeaf()
     session.refreshContext()
   }
-  session.sessionManager.appendCustomEntry('tyrs-branch', { operation: method })
+  session.sessionManager.appendCustomEntry('codex-harness-adapter-branch', { operation: method })
   s.store.replaceTurns(thread.id, projectHistory(session.sessionManager.getBranch(), thread))
   s.notify(thread.id, 'thread/reverted', {})
   return { thread: s.envelope(thread), turnsBackwardsCursor: null, itemsBackwardsCursor: null }

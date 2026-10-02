@@ -8,19 +8,19 @@ import { Duplex } from 'node:stream'
 import WebSocket from 'ws'
 
 const root = resolve('.')
-const adapter = resolve('dist/src/adapter.mjs')
+const adapter = resolve('packages/claude/dist/claude/src/adapter.mjs')
 const nodeBin = process.execPath
 const remotePath = process.env.PATH ?? ''
-const claudeCli = process.env.CLAUDE_CODEX_CLI ?? findExecutable('claude')
-const host = process.env.CLAUDE_CODEX_GUI_SSH_HOST || 'localhost'
-const requireRealRuntime = process.env.CLAUDE_CODEX_GUI_SSH_REQUIRE_REAL === '1'
+const claudeCli = process.env.CHA_CLAUDE_CLI ?? findExecutable('claude')
+const host = process.env.CHA_CLAUDE_GUI_SSH_HOST || 'localhost'
+const requireRealRuntime = process.env.CHA_CLAUDE_GUI_SSH_REQUIRE_REAL === '1'
 const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-const base = resolve('.claude-codex', `gui-ssh-localhost-${stamp}`)
+const base = resolve('.codex-harness-adapter', `gui-ssh-localhost-${stamp}`)
 const home = join(base, 'codex-home')
 const workspace = join(base, 'workspace')
 const socketPath = join(home, 'app-server-control', 'app-server-control.sock')
-const targetFile = join(workspace, 'claude-codex-gui-ssh-acceptance.txt')
-const expectedText = 'claude-codex-gui-ssh-ok'
+const targetFile = join(workspace, 'codex-harness-adapter-gui-ssh-acceptance.txt')
+const expectedText = 'codex-harness-adapter-gui-ssh-ok'
 
 let daemon = null
 let proxy = null
@@ -50,7 +50,7 @@ async function main() {
     // node_modules, no Python sidecar to probe anymore.
     const probe = runSsh(
       remoteShell(
-        `${remoteEnv()}; cd ${shQuote(root)}; printf "codex=%s\\n" "$(command -v codex)"; codex --version; printf "adapter=%s\\n" "$CLAUDE_CODEX_ADAPTER"; "$CLAUDE_CODEX_NODE" -e "import(\\"@anthropic-ai/claude-agent-sdk\\").then(()=>console.log(\\"sdk-ok\\"))"`,
+        `${remoteEnv()}; cd ${shQuote(root)}; printf "codex=%s\\n" "$(command -v codex)"; codex --version; printf "adapter=%s\\n" "$CHA_CLAUDE_ADAPTER"; "$CHA_CLAUDE_NODE" -e "import(\\"@anthropic-ai/claude-agent-sdk\\").then(()=>console.log(\\"sdk-ok\\"))"`,
       ),
     )
     assert.match(
@@ -68,7 +68,7 @@ async function main() {
       }
       useMockRuntime = true
       console.warn(
-        `Remote Claude auth unavailable over SSH; using CLAUDE_CODEX_MOCK=1 (${authProbe.message})`,
+        `Remote Claude auth unavailable over SSH; using CHA_CLAUDE_MOCK=1 (${authProbe.message})`,
       )
     }
 
@@ -140,7 +140,7 @@ async function main() {
             type: 'text',
             text: [
               'Use Claude Code tools in the current working directory.',
-              `Create or overwrite a file named claude-codex-gui-ssh-acceptance.txt with exactly this content and no extra whitespace: ${expectedText}`,
+              `Create or overwrite a file named codex-harness-adapter-gui-ssh-acceptance.txt with exactly this content and no extra whitespace: ${expectedText}`,
               `After the file is written, reply with exactly: ${expectedText}`,
             ].join('\n'),
             text_elements: [],
@@ -177,7 +177,7 @@ async function main() {
         'expected at least one file-change approval bridged through Codex',
       )
       assert.ok(diff.length > 0, 'expected a turn/diff/updated event')
-      assert.match(diff, /claude-codex-gui-ssh-acceptance\.txt/)
+      assert.match(diff, /codex-harness-adapter-gui-ssh-acceptance\.txt/)
       assert.equal((await readFile(targetFile, 'utf8')).trim(), expectedText)
 
       rpc.close()
@@ -243,11 +243,11 @@ function remoteEnv(options = {}) {
   const exports = [
     `export PATH=${shQuote(shimDir)}:${shQuote(remotePath)}`,
     `export CODEX_HOME=${shQuote(home)}`,
-    `export CLAUDE_CODEX_ADAPTER=${shQuote(adapter)}`,
-    `export CLAUDE_CODEX_NODE=${shQuote(nodeBin)}`,
+    `export CHA_CLAUDE_ADAPTER=${shQuote(adapter)}`,
+    `export CHA_CLAUDE_NODE=${shQuote(nodeBin)}`,
   ]
-  if (claudeCli) exports.push(`export CLAUDE_CODEX_CLI=${shQuote(claudeCli)}`)
-  if (options.mock) exports.push('export CLAUDE_CODEX_MOCK=1')
+  if (claudeCli) exports.push(`export CHA_CLAUDE_CLI=${shQuote(claudeCli)}`)
+  if (options.mock) exports.push('export CHA_CLAUDE_MOCK=1')
   return exports.join('; ')
 }
 
@@ -286,7 +286,7 @@ function probeRemoteClaudeAuth() {
       message: 'claude CLI not found on local PATH for remote auth preflight',
     }
   }
-  const marker = 'claude-codex-auth-ok'
+  const marker = 'codex-harness-adapter-auth-ok'
   const result = spawnSync(
     'ssh',
     [
@@ -352,7 +352,7 @@ async function waitForSocket(path) {
 }
 
 function daemonSocketPathFromStderr() {
-  const marker = '[claude-codex-adapter] listening on '
+  const marker = '[codex-harness-adapter] listening on '
   const index = daemonStderr.lastIndexOf(marker)
   if (index < 0) return null
   const line = daemonStderr

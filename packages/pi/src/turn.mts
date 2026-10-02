@@ -21,7 +21,7 @@ export function onEvent(server: PiServer, thread: PiThread, event: any): void {
         resolve = r
       })
       const turn = {
-        id: `tyrs:${randomUUID()}`,
+        id: `codex-harness-adapter:${randomUUID()}`,
         items: [],
         status: 'inProgress' as const,
         error: null,
@@ -42,7 +42,7 @@ export function onEvent(server: PiServer, thread: PiThread, event: any): void {
         notices: [],
       }
       server.active.set(thread.id, active)
-      live.session.sessionManager.appendCustomEntry('tyrs-turn', {
+      live.session.sessionManager.appendCustomEntry('codex-harness-adapter-turn', {
         id: turn.id,
         startedAt: turn.startedAt,
         source: 'pi',
@@ -224,7 +224,7 @@ export function onEvent(server: PiServer, thread: PiThread, event: any): void {
                 : createTwoFilesPatch(path, path, call.before, call.args.content),
           },
         ]
-        active.live?.session.sessionManager.appendCustomEntry('tyrs-file-change', {
+        active.live?.session.sessionManager.appendCustomEntry('codex-harness-adapter-file-change', {
           id: event.toolCallId,
           changes: call.item.changes,
         })
@@ -298,7 +298,7 @@ export async function runTurn(server: PiServer, active: ActiveTurn, params: any)
       thread.model = params.model
     }
     if (params.effort) session.setThinkingLevel(params.effort)
-    session.sessionManager.appendCustomEntry('tyrs-turn', {
+    session.sessionManager.appendCustomEntry('codex-harness-adapter-turn', {
       id: turn.id,
       startedAt: turn.startedAt,
       clientId: active.pendingClientIds[0] ?? null,
@@ -391,7 +391,7 @@ async function finishTurn(
   turn.completedAt = Date.now()
   turn.durationMs = turn.completedAt - turn.startedAt
   if (!externalChange)
-    active.live?.session.sessionManager.appendCustomEntry('tyrs-turn-end', {
+    active.live?.session.sessionManager.appendCustomEntry('codex-harness-adapter-turn-end', {
       id: turn.id,
       status: turn.status,
       error: turn.error,

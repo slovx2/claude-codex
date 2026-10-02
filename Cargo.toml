@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/claude-codex-protocol"]
+members = ["crates/codex-harness-adapter-protocol"]
 resolver = "2"
 
 [workspace.package]

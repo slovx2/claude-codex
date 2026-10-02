@@ -15,19 +15,19 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 
 const DEFAULT_MODES = ['codex', 'agent-sdk-sidecar', 'agent-http', 'agentapi', 'claude-p']
-const TOKEN_FILE = '.claude-codex-mode-matrix-token'
+const TOKEN_FILE = '.codex-harness-adapter-mode-matrix-token'
 const MODEL = process.env.MODE_MATRIX_MODEL || 'haiku'
 const TURN_TIMEOUT_MS = Number(process.env.TURN_TIMEOUT_MS || 180_000)
 const RESTORE_ENV = process.env.MODE_MATRIX_RESTORE_ENV !== '0'
 
 async function runOverSsh(args) {
-  const host = args[0] || process.env.CLAUDE_CODEX_MATRIX_SSH_HOST
+  const host = args[0] || process.env.CHA_CLAUDE_MATRIX_SSH_HOST
   if (!host) throw new Error('usage: acceptance-ssh-runtime-matrix.mjs <ssh-host> <cwd-a> <cwd-b>')
   const cwds = args.slice(1)
   if (cwds.length < 2)
     throw new Error('usage: acceptance-ssh-runtime-matrix.mjs <ssh-host> <cwd-a> <cwd-b>')
   const self = fileURLToPath(import.meta.url)
-  const remoteScript = `/tmp/claude-codex-runtime-matrix-${Date.now()}-${process.pid}.mjs`
+  const remoteScript = `/tmp/codex-harness-adapter-runtime-matrix-${Date.now()}-${process.pid}.mjs`
 
   runChecked('scp', ['-q', self, `${host}:${remoteScript}`])
   try {
@@ -44,8 +44,8 @@ async function runOverSsh(args) {
       .join(' ')
     const command = [
       'set -e',
-      '. "$HOME/.claude-codex/runtime.env"',
-      'node_bin="${CLAUDE_CODEX_NODE:-node}"',
+      '. "$HOME/.codex-harness-adapter/runtime.env"',
+      'node_bin="${CHA_CLAUDE_NODE:-node}"',
       `${env} "$node_bin" ${shQuote(remoteScript)} --runner ${cwdArgs}`,
     ].join('; ')
     const proc = spawn('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=12', host, command], {
@@ -78,14 +78,14 @@ async function runMatrix(cwds) {
   const fromModes = modesFromEnv('MODE_MATRIX_FROM_MODES', modes)
   const toModes = modesFromEnv('MODE_MATRIX_TO_MODES', modes)
   const envFile =
-    process.env.CLAUDE_CODEX_RUNTIME_ENV ||
-    join(process.env.HOME || '', '.claude-codex/runtime.env')
+    process.env.CHA_CLAUDE_RUNTIME_ENV ||
+    join(process.env.HOME || '', '.codex-harness-adapter/runtime.env')
   const originalEnv = existsSync(envFile) ? readFileSync(envFile, 'utf8') : null
-  const helper = process.env.CLAUDE_CODEX_MODE_COMMAND || 'claude-codex-mode'
+  const helper = process.env.CHA_CLAUDE_MODE_COMMAND || 'codex-harness-adapter-mode'
   const codexReal = requireEnv('CODEX_REAL')
-  const nodeBin = process.env.CLAUDE_CODEX_NODE || process.execPath
-  const adapter = requireEnv('CLAUDE_CODEX_ADAPTER')
-  const scratch = mkdtempSync(join(tmpdir(), 'claude-codex-runtime-matrix-'))
+  const nodeBin = process.env.CHA_CLAUDE_NODE || process.execPath
+  const adapter = requireEnv('CHA_CLAUDE_ADAPTER')
+  const scratch = mkdtempSync(join(tmpdir(), 'codex-harness-adapter-runtime-matrix-'))
   const results = []
   const runId = Date.now().toString(36)
 
@@ -205,7 +205,9 @@ function modesFromEnv(key, fallback) {
 function requireEnv(key) {
   const value = process.env[key]
   if (!value)
-    throw new Error(`missing ${key}; source ~/.claude-codex/runtime.env before running the matrix`)
+    throw new Error(
+      `missing ${key}; source ~/.codex-harness-adapter/runtime.env before running the matrix`,
+    )
   return value
 }
 
@@ -244,7 +246,7 @@ async function ensureBridgeIfNeeded(helper, mode, cwd) {
   if (mode !== 'agent-http' && mode !== 'agentapi') return
   const ready = runHelper(helper, ['ensure-bridge', mode, MODEL, cwd], 180_000)
   if (mode !== 'agentapi') return
-  const baseUrl = ready.stdout.match(/CLAUDE_CODEX_BRIDGE_URL=(\S+)/)?.[1]
+  const baseUrl = ready.stdout.match(/CHA_CLAUDE_BRIDGE_URL=(\S+)/)?.[1]
   if (baseUrl) runHelper(helper, ['trust', baseUrl], 60_000, true)
 }
 
@@ -278,8 +280,8 @@ function runCodex(codexReal, cwd, expected, scratch) {
 
 async function runAdapter({ nodeBin, adapter, cwd, expected, mode }) {
   const envFile =
-    process.env.CLAUDE_CODEX_RUNTIME_ENV ||
-    join(process.env.HOME || '', '.claude-codex/runtime.env')
+    process.env.CHA_CLAUDE_RUNTIME_ENV ||
+    join(process.env.HOME || '', '.codex-harness-adapter/runtime.env')
   const proc = spawn(
     'bash',
     [
@@ -375,9 +377,9 @@ async function runAdapter({ nodeBin, adapter, cwd, expected, mode }) {
 
 function adapterEnv() {
   const env = { ...process.env, NODE_NO_WARNINGS: '1' }
-  if (!env.CLAUDE_CODEX_CLAUDE_P_TIMEOUT_MS) {
+  if (!env.CHA_CLAUDE_CLAUDE_P_TIMEOUT_MS) {
     const timeout = Math.max(30_000, Math.min(120_000, TURN_TIMEOUT_MS - 60_000))
-    env.CLAUDE_CODEX_CLAUDE_P_TIMEOUT_MS = String(timeout)
+    env.CHA_CLAUDE_CLAUDE_P_TIMEOUT_MS = String(timeout)
   }
   return env
 }

@@ -6,7 +6,7 @@
 
 - 客户端选择计划模式，或 Claude 调用 EnterPlanMode，都会持久保存会话模式并发送 thread/settings/updated。
 - AskUserQuestion 通过 item/tool/requestUserInput 等待用户回答。答案按 SDK updatedInput 的正式结构返回，不能伪装为工具拒绝。
-- 原生计划文件仅可写入项目内 `.claude/plans/tyrs-hand/<threadId>/` 目录；这是 CLI 支持的相对路径配置，每个线程独立且禁止符号链接逃出项目。计划内容以 plan item 和文本增量发给客户端，项目源码仍不能在计划模式中写入。
+- 原生计划文件仅可写入项目内 `.claude/plans/codex-harness-adapter/<threadId>/` 目录；这是 CLI 支持的相对路径配置，每个线程独立且禁止符号链接逃出项目。计划内容以 plan item 和文本增量发给客户端，项目源码仍不能在计划模式中写入。
 - ExitPlanMode 要求用户明确选择“执行计划”。选择“继续规划”、取消或中断均不会放行执行。
 - 确认退出后更改真实 SDK permissionMode，再同步会话模式；退出不改变用户的文件系统权限。只读会话退出计划后仍然只读。
 - 子代理不能修改父会话的计划模式。
@@ -42,7 +42,7 @@ granular 的 sandbox_approval 对应命令审批，rules 对应规则强制审�
 - Tyrs Hand PLAN-003：双真实 SSH 客户端经过 Worker/Hub，仲裁计划回答、命令和文件审批；同一个操作只能产生一次副作用。
 - FAILURE-003：对真实 CLI 发送 SIGSTOP/SIGKILL，验证有界终止、审批结束事件先于回合终态、迟到接受无副作用、恢复请求包含原生上下文及取消工具结果。工具意图须经 SDK 确认落盘才允许执行。
 
-运行 npm test 和 npm run test:protocol；通过 CLAUDE_CODEX_CLI 指定独立安装的固定 CLI。后者禁止访问公网模型，只运行固定 SDK/宿主 CLI 和本地 Mock LLM，并输出 schema 检查、JUnit、wire 和模型请求证据。
+运行 npm test 和 npm run test:protocol；通过 CHA_CLAUDE_CLI 指定独立安装的固定 CLI。后者禁止访问公网模型，只运行固定 SDK/宿主 CLI 和本地 Mock LLM，并输出 schema 检查、JUnit、wire 和模型请求证据。
 Linux 全部测试位于隔离网络 namespace。macOS 的 Bash 沙箱测试必须单独运行，因为 Seatbelt 不支持嵌套；此用例使用临时 HOME、白名单环境、虚拟密钥和强制回环的模型端点，并单独记录隔离方式和 JUnit，不能声称具有外层 OS 禁网。
 
 这些用例不代表完整产品发布验收。MCP OAuth、全部故障路径、真实桌面/手机 GUI 和完整协议矩阵仍受主项目 releaseReady 门禁约束，不能以协议驱动冒充 GUI 验收。

@@ -11,8 +11,7 @@ writeFileSync(
   JSON.stringify({ runId, startedAt: new Date().toISOString() }),
 )
 let schema =
-  process.env.CODEX_SCHEMA_DIR ??
-  resolve('../tyrs-hand/protocol/codex-app-server/0.157.1/json-schema')
+  process.env.CODEX_SCHEMA_DIR ?? resolve('protocol/codex-app-server/0.157.1/json-schema')
 if (!existsSync(schema)) {
   const cli = process.env.CODEX_TEST_BIN ?? 'codex'
   const version = execFileSync(cli, ['--version'], { encoding: 'utf8' }).trim()
@@ -20,9 +19,13 @@ if (!existsSync(schema)) {
   schema = resolve(artifacts, 'schema')
   execFileSync(cli, ['app-server', 'generate-json-schema', '--experimental', '--out', schema])
 }
-const info = execFileSync(process.execPath, ['dist/src/adapter.mjs', '--runtime-info'], {
-  encoding: 'utf8',
-})
+const info = execFileSync(
+  process.execPath,
+  ['packages/claude/dist/claude/src/adapter.mjs', '--runtime-info'],
+  {
+    encoding: 'utf8',
+  },
+)
 writeFileSync(resolve(artifacts, 'versions.json'), info)
 const command = process.platform === 'darwin' ? '/usr/bin/sandbox-exec' : 'unshare'
 const isolation =
@@ -53,55 +56,55 @@ const result = spawnSync(
     '--test-reporter-destination=stdout',
     `--test-reporter-destination=${resolve(artifacts, 'junit.xml')}`,
     `--test-reporter-destination=${resolve(artifacts, 'executions.jsonl')}`,
-    'dist/test/native-protocol.test.mjs',
-    'dist/test/native-diagnostics.test.mjs',
-    'dist/test/native-catalog.test.mjs',
-    'dist/test/native-attachments.test.mjs',
-    'dist/test/native-projects.test.mjs',
-    'dist/test/native-experimental-features.test.mjs',
-    'dist/test/native-thread-shell.test.mjs',
-    'dist/test/native-context-injection.test.mjs',
-    'dist/test/native-review.test.mjs',
-    'dist/test/native-review-recovery.test.mjs',
-    'dist/test/native-skills.test.mjs',
-    'dist/test/native-skills-management.test.mjs',
-    'dist/test/native-hooks.test.mjs',
-    'dist/test/native-config.test.mjs',
-    'dist/test/native-rate-limits.test.mjs',
-    'dist/test/native-history.test.mjs',
-    'dist/test/native-timeline.test.mjs',
-    'dist/test/native-session.test.mjs',
-    'dist/test/native-sections.test.mjs',
-    'dist/test/native-rollback-failure.test.mjs',
-    'dist/test/native-revert.test.mjs',
-    'dist/test/native-queue.test.mjs',
-    'dist/test/native-submit-failure.test.mjs',
-    'dist/test/native-goals.test.mjs',
-    'dist/test/native-goal-execution.test.mjs',
-    'dist/test/native-events.test.mjs',
-    'dist/test/native-event-deletion.test.mjs',
-    'dist/test/native-turn-control.test.mjs',
-    'dist/test/native-turn-settings.test.mjs',
-    'dist/test/native-image-reference.test.mjs',
-    'dist/test/native-interactions.test.mjs',
-    'dist/test/native-interaction-wait.test.mjs',
-    'dist/test/native-approval-lifecycle.test.mjs',
-    'dist/test/native-plan.test.mjs',
-    'dist/test/native-permission-policy.test.mjs',
-    'dist/test/native-sandbox-policy.test.mjs',
+    'packages/claude/dist/claude/test/native-protocol.test.mjs',
+    'packages/claude/dist/claude/test/native-diagnostics.test.mjs',
+    'packages/claude/dist/claude/test/native-catalog.test.mjs',
+    'packages/claude/dist/claude/test/native-attachments.test.mjs',
+    'packages/claude/dist/claude/test/native-projects.test.mjs',
+    'packages/claude/dist/claude/test/native-experimental-features.test.mjs',
+    'packages/claude/dist/claude/test/native-thread-shell.test.mjs',
+    'packages/claude/dist/claude/test/native-context-injection.test.mjs',
+    'packages/claude/dist/claude/test/native-review.test.mjs',
+    'packages/claude/dist/claude/test/native-review-recovery.test.mjs',
+    'packages/claude/dist/claude/test/native-skills.test.mjs',
+    'packages/claude/dist/claude/test/native-skills-management.test.mjs',
+    'packages/claude/dist/claude/test/native-hooks.test.mjs',
+    'packages/claude/dist/claude/test/native-config.test.mjs',
+    'packages/claude/dist/claude/test/native-rate-limits.test.mjs',
+    'packages/claude/dist/claude/test/native-history.test.mjs',
+    'packages/claude/dist/claude/test/native-timeline.test.mjs',
+    'packages/claude/dist/claude/test/native-session.test.mjs',
+    'packages/claude/dist/claude/test/native-sections.test.mjs',
+    'packages/claude/dist/claude/test/native-rollback-failure.test.mjs',
+    'packages/claude/dist/claude/test/native-revert.test.mjs',
+    'packages/claude/dist/claude/test/native-queue.test.mjs',
+    'packages/claude/dist/claude/test/native-submit-failure.test.mjs',
+    'packages/claude/dist/claude/test/native-goals.test.mjs',
+    'packages/claude/dist/claude/test/native-goal-execution.test.mjs',
+    'packages/claude/dist/claude/test/native-events.test.mjs',
+    'packages/claude/dist/claude/test/native-event-deletion.test.mjs',
+    'packages/claude/dist/claude/test/native-turn-control.test.mjs',
+    'packages/claude/dist/claude/test/native-turn-settings.test.mjs',
+    'packages/claude/dist/claude/test/native-image-reference.test.mjs',
+    'packages/claude/dist/claude/test/native-interactions.test.mjs',
+    'packages/claude/dist/claude/test/native-interaction-wait.test.mjs',
+    'packages/claude/dist/claude/test/native-approval-lifecycle.test.mjs',
+    'packages/claude/dist/claude/test/native-plan.test.mjs',
+    'packages/claude/dist/claude/test/native-permission-policy.test.mjs',
+    'packages/claude/dist/claude/test/native-sandbox-policy.test.mjs',
     ...(process.platform === 'darwin'
       ? []
       : [
-          'dist/test/native-bash-sandbox.test.mjs',
-          'dist/test/native-request-permissions.test.mjs',
+          'packages/claude/dist/claude/test/native-bash-sandbox.test.mjs',
+          'packages/claude/dist/claude/test/native-request-permissions.test.mjs',
         ]),
-    'dist/test/native-cli-failure.test.mjs',
-    'dist/test/native-mcp.test.mjs',
-    'dist/test/native-mcp-management.test.mjs',
-    'dist/test/native-mcp-oauth.test.mjs',
-    'dist/test/native-mcp-elicitation.test.mjs',
-    'dist/test/native-mcp-elicitation-wait.test.mjs',
-    'dist/test/native-process.test.mjs',
+    'packages/claude/dist/claude/test/native-cli-failure.test.mjs',
+    'packages/claude/dist/claude/test/native-mcp.test.mjs',
+    'packages/claude/dist/claude/test/native-mcp-management.test.mjs',
+    'packages/claude/dist/claude/test/native-mcp-oauth.test.mjs',
+    'packages/claude/dist/claude/test/native-mcp-elicitation.test.mjs',
+    'packages/claude/dist/claude/test/native-mcp-elicitation-wait.test.mjs',
+    'packages/claude/dist/claude/test/native-process.test.mjs',
   ],
   {
     stdio: 'inherit',
@@ -138,8 +141,8 @@ if (process.platform === 'darwin') {
       '--test-reporter-destination=stdout',
       `--test-reporter-destination=${resolve(artifacts, 'junit-sandbox.xml')}`,
       `--test-reporter-destination=${resolve(artifacts, 'executions-sandbox.jsonl')}`,
-      'dist/test/native-bash-sandbox.test.mjs',
-      'dist/test/native-request-permissions.test.mjs',
+      'packages/claude/dist/claude/test/native-bash-sandbox.test.mjs',
+      'packages/claude/dist/claude/test/native-request-permissions.test.mjs',
     ],
     {
       stdio: 'inherit',

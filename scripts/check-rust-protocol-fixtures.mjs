@@ -7,7 +7,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const fixturesDir = join(root, 'crates', 'claude-codex-protocol', 'fixtures')
+const fixturesDir = join(root, 'crates', 'codex-harness-adapter-protocol', 'fixtures')
 const repoShim = join(root, 'scripts', 'codex-shim')
 
 const fixtures = [
@@ -177,7 +177,7 @@ function looksLikeAdapterShim(path) {
     if (stat.size > 128_000) return false
     const text = readFileSync(path, 'utf8')
     return (
-      text.includes('CLAUDE_CODEX_ADAPTER') ||
+      text.includes('CHA_CLAUDE_ADAPTER') ||
       text.includes('codex shim') ||
       text.includes('CODEX_REAL')
     )
@@ -261,7 +261,7 @@ function validateSchema(fixturesByFile) {
 for (const fixture of fixtures) validateFixture(fixture)
 
 const generator = resolveGenerator()
-const outDir = mkdtempSync(join(tmpdir(), 'claude-codex-schema-'))
+const outDir = mkdtempSync(join(tmpdir(), 'codex-harness-adapter-schema-'))
 try {
   const generated = generateSchema(generator, outDir)
   validateSchema(generated)

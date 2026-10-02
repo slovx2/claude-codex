@@ -4,7 +4,7 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const root = await mkdtemp(join(tmpdir(), 'tyrs-pi-runtime-'))
+const root = await mkdtemp(join(tmpdir(), 'codex-harness-adapter-pi-runtime-'))
 const agentDir = join(root, 'agent')
 await mkdir(agentDir)
 process.env.PI_CODING_AGENT_DIR = agentDir

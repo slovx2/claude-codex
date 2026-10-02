@@ -1,12 +1,12 @@
 import { defineConfig } from 'vitepress'
 
-const repo = 'https://github.com/fuergaosi233/claude-codex'
+const repo = 'https://github.com/slovx2/codex-harness-adapter'
 
 export default defineConfig({
-  title: 'Claude Codex Adapter',
+  title: 'Codex Harness Adapter',
   description:
     'Use Claude Code inside the Codex desktop app over the native Codex app-server protocol.',
-  base: '/claude-codex/',
+  base: '/codex-harness-adapter/',
   lastUpdated: true,
   cleanUrls: true,
   ignoreDeadLinks: true,

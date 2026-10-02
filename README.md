@@ -1,219 +1,125 @@
-# Claude Codex Adapter
+# codex-harness-adapter
 
-[![CI](https://github.com/fuergaosi233/claude-codex/actions/workflows/ci.yml/badge.svg)](https://github.com/fuergaosi233/claude-codex/actions/workflows/ci.yml)
-[![Docs](https://github.com/fuergaosi233/claude-codex/actions/workflows/deploy-docs.yml/badge.svg)](https://fuergaosi233.github.io/claude-codex/)
-[![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
+**在 Codex 桌面端连接各种 harness。**
 
-Production TypeScript adapter that lets the **Codex desktop app** talk to
-**Claude Code** through the native Codex `app-server` protocol in Remote mode.
+把 Claude Code 或 Pi 接入 Codex 的 SSH 连接入口，在同一个桌面界面中使用不同的编码引擎。适配器运行在你的机器上，复用引擎自己的工具、会话和配置。
 
-Codex App still runs its normal SSH version probe, bootstrap, and `app-server
-proxy` flow — but `codex app-server` is handled by this adapter instead of the
-real Codex runtime, so agent turns run on Claude Code.
+目前提供 Claude Code 和 Pi 两种适配器，支持 macOS、Linux。项目处于开发阶段；客户端协议固定为 Codex app-server **0.157.1**，桌面端更新后需要重新验证连接行为。
 
-📖 **Documentation: <https://fuergaosi233.github.io/claude-codex/>**
+## 工作方式
 
-## Quick start
-
-```bash
-npm install
-npm run build        # tsc -> dist/ (production artifact)
-npm run dev          # tsx src/adapter.mts — run sources directly, no build
-npm run doctor       # environment self-check
+```text
+Codex 桌面端
+    ├─ SSH 127.0.0.1:7331 → Claude 适配器 → Claude Code
+    └─ SSH 127.0.0.1:7332 → Pi 适配器     → Pi
 ```
 
-> **Requires Node.js 24+** for stable `node:sqlite`. Set `CLAUDE_CODEX_NODE` to
-> pin a node binary if your default is older.
+每个入口拥有独立的进程、HostKey、socket、适配数据库和日志。SSH 会话中的 `codex` 命令由入口包装器提供，用户平时使用的 Codex CLI 和全局 PATH 不会被修改。
 
-Then install the `codex` shim on the remote host and add a Remote connection in
-the Codex App:
+适配器负责把引擎事件、工具调用、审批和会话历史映射到 Codex 协议。模型执行和原生会话仍由各 harness 管理。
 
-```bash
-mkdir -p ~/bin
-cp scripts/codex-shim ~/bin/codex && chmod +x ~/bin/codex
-export PATH="$HOME/bin:$PATH"
-export CLAUDE_CODEX_ADAPTER="$PWD/dist/src/adapter.mjs"
-export ANTHROPIC_API_KEY="<your-anthropic-api-key>" # or authenticate with `claude /login`
-```
+## 准备环境
 
-Provide credentials only through your local shell or secret manager. Do not
-commit API keys, OAuth/session data, `.env` files, or acceptance-test logs.
+源码构建使用以下固定版本：
 
-Full walkthrough → **[Getting started](https://fuergaosi233.github.io/claude-codex/guide/getting-started)**.
-
-## How it works
-
-```
-Codex App ──SSH──▶ login shell ──▶ codex (shim, earlier in PATH)
-                                     │
-                  app-server calls ──┘──▶ Claude Codex Adapter ──▶ Claude Code
-                  everything else  ──────▶ real Codex CLI (CODEX_REAL)
-```
-
-Agent text and reasoning stream into the conversation; `Bash` becomes command
-approvals; `Edit`/`Write`/`MultiEdit` become file-change approvals with live
-diffs. Runtime selection maps only to existing backend paths today: default
-in-process Claude Agent SDK, `agent-http`, `agentapi`, `claude-p`, `codex-proxy`,
-and `mock`.
-
-### 人工交互等待
-
-适配器不为提问、审批、计划确认和 MCP 表单设置默认人工回答时限。
-交互只在收到回答、用户取消、连接断开、回合中断或运行时停止时结束。
-原有两处默认 120 秒计时器已移除；MCP 工具调用仍保留结果校验和取消通知。
-连接建立与管理请求的超时、用户显式配置的 `tool_timeout_sec` 继续生效。
-外部 MCP 服务和原生 Claude CLI/SDK 可以有自己的工具执行上限；本适配器不修改它们，
-也不通过设置超大 timeout 冒充关闭计时器。
-
-### Desktop conversation and visual explanations
-
-The native Claude Agent SDK backend receives presentation guidance modeled on
-Claude Desktop's conversational style: natural explanations, enough detail for
-complex questions, and formatting chosen for the content instead of a fixed
-engineering report. Questions invite discussion; requests for action still use
-and verify tools. Progress updates explain meaningful transitions while native
-tool events retain execution details.
-
-The guidance describes Codex desktop's Markdown and Mermaid rendering. For
-explanations that benefit from a diagram, Claude is encouraged to use a fenced
-`mermaid` flowchart or sequence diagram, while keeping simple answers brief and
-respecting requested language and formats. This supplements the Claude Code
-preset and preserves explicit project/developer/personality preferences. No global
-`~/.claude/CLAUDE.md` changes are needed; schema-constrained turns do not receive
-this presentation guidance.
-
-Rendering is provided by the Codex app version you use. The adapter preserves the
-Markdown in streaming and history; it does not bundle a diagram renderer or a
-Claude Desktop Artifacts runtime. Arbitrary HTML/React code fences do not become
-interactive apps. Older clients may show Mermaid source instead of a diagram.
-
-### `/workflows` compatibility
-
-With the native Claude Agent SDK backend, `/workflows <task>` is translated to Claude's
-`ultracode:` workflow trigger. Workflow task events are exposed as Codex-native reviewable
-Subagent threads. While a local workflow runs, the adapter tails its journal and projects each
-inner agent through Codex's native `subAgentActivity` lifecycle (with `completed` sent only to
-clients that advertise it) plus `spawnAgent`/`wait` tool state; runtimes without journal metadata
-fall back to one aggregate workflow agent when the workflow reaches a terminal state.
-A bare `/workflows` lists workflow runs
-recorded in the current Codex thread.
-
-This compatibility layer is specific to the native Claude Agent SDK backend. Alternate HTTP,
-agentapi, and `claude -p` backends receive no workflow event bridge. Interactive workflow
-management actions such as pause, resume, stop, and save are not implemented.
-
-When Codex Full Access is selected, the adapter keeps Claude in its standard permission mode and
-auto-allows permission requests through the existing Codex bridge. This avoids Relay's refusal of
-dangerous permission bypass outside a recognized container sandbox while preserving a zero-prompt
-Full Access turn. Operators can still opt into native SDK bypass explicitly with
-`CLAUDE_CODEX_PERMISSION_MODE=bypassPermissions` in an appropriately isolated environment.
-
-## Current release boundaries
-
-- **Production path:** the TypeScript app-server adapter remains the shipping
-  path for Codex desktop Remote mode and Claude Code.
-- **Rust-first work:** RFCs, a workspace scaffold, protocol fixtures, parse /
-  reserialize tests, and pinned fixture drift checks are present. Rust does not
-  replace the production runtime, transport, store, or launcher yet.
-- **Provider and agent-loop work:** descriptors, sanitized `config/read`
-  projection, and explicit provider/loop selection are implemented. Selection
-  is metadata and routing for known descriptors only; it maps to existing
-  runtime backends and does not add a new executable provider loop.
-- **Credential model:** use local user-owned API keys, official cloud-provider
-  credential chains, local CLI auth on the same host, or organization-managed
-  gateways that own billing, policy, audit, and provider compliance.
-- **Unsupported:** personal subscription pooling, browser cookie or session-token
-  reuse, credential sharing, private endpoint use, provider bypass behavior, and
-  claims of unavailable entitlements.
-- **Release checks:** CI runs `npm run check`, `npm run typecheck`, `npm test`,
-  `cargo test --workspace`, and the pinned Rust fixture drift check. Docs changes
-  should run `npm run docs:build`; credentialed smoke and acceptance checks stay
-  opt-in with user- or organization-owned credentials.
-
-See the
-**[release readiness reference](https://fuergaosi233.github.io/claude-codex/reference/release-readiness)**
-for the verification matrix and reviewer checklist.
-
-## Documentation
-
-| Topic | Link |
+| 组件 | 版本 |
 | --- | --- |
-| Getting started | <https://fuergaosi233.github.io/claude-codex/guide/getting-started> |
-| Deployment (remote host) | <https://fuergaosi233.github.io/claude-codex/guide/deployment> |
-| Using the Codex App | <https://fuergaosi233.github.io/claude-codex/guide/gui> |
-| Configuration | <https://fuergaosi233.github.io/claude-codex/guide/configuration> |
-| Backends | <https://fuergaosi233.github.io/claude-codex/guide/backends> |
-| Capability matrix | <https://fuergaosi233.github.io/claude-codex/reference/capability-matrix> |
-| Workflow operations | <https://fuergaosi233.github.io/claude-codex/reference/workflow-operations> |
-| Release readiness | <https://fuergaosi233.github.io/claude-codex/reference/release-readiness> |
-| Contributing / toolchain | <https://fuergaosi233.github.io/claude-codex/contributing> |
-| Security policy | [SECURITY.md](SECURITY.md) |
-| Safe examples | [examples/](examples/) |
+| Node.js | 24.14.0 |
+| Go | 1.26.6 |
+| Claude Agent SDK | 0.3.282 |
+| Claude Code CLI 基线 | 2.1.282 |
+| Pi SDK / CLI 基线 | 0.99.1 |
 
-Docs source lives in [`docs/`](docs/) and is published with VitePress. For
-contributors, the repo also ships progressive `AGENTS.md` files (root + `src/` +
-`scripts/` + `test/`).
+依赖版本由 package.json、锁文件和 `protocol/versions.json` 记录。运行时对宿主 CLI 执行最低版本检查；不自动安装或升级用户的 CLI。
 
-## Development
+终端功能需要 Python 3、POSIX shell 和系统常用命令。Claude 在 Linux 上还需要 bubblewrap、socat 和可用的用户命名空间；macOS 使用系统 sandbox-exec。缺少沙箱依赖会报错，不会静默改成无沙箱执行。
 
-```bash
-npm run dev          # run from TypeScript via tsx
-npm run typecheck    # tsc --noEmit
-npm run check        # biome format + lint
-npm test             # build + node --test
-npm run docs:dev     # preview this documentation site
+先安装需要使用的官方 Claude Code 或 Pi CLI，并通过原生工具配置模型和登录。可用 `CHA_CLAUDE_CLI`、`PI_CLI` 指定 CLI 路径；原生 `CLAUDE_CONFIG_DIR`、`PI_CODING_AGENT_DIR` 等配置仍由对应引擎管理。
+
+## 从源码构建
+
+```sh
+git clone https://github.com/slovx2/codex-harness-adapter.git
+cd codex-harness-adapter
+npm ci
+npm ci --prefix packages/claude
+npm ci --prefix packages/pi
+npm run build
+./bin/codex-harness-adapter doctor
 ```
 
-See **[Contributing](https://fuergaosi233.github.io/claude-codex/contributing)**
-for the full toolchain and conventions.
+只检查某一个引擎：
 
-## Workflow operations
-
-The adapter includes a small workflow control plane for long-running Codex
-maintenance loops. It is intentionally file-backed and explicit: the scheduler
-tracks tasks in `~/.codex/claude-codex-adapter/workflow-state.json`, and a task
-only runs after it has been queued and leased.
-
-```bash
-npm run workflow -- status
-npm run workflow -- health
-npm run workflow -- enqueue --id task-id --prompt "Do one concrete task"
-npm run workflow -- schedule --worker codex-heartbeat
-npm run workflow -- heartbeat --task task-id --worker codex-heartbeat
-npm run workflow -- complete --task task-id
+```sh
+./bin/codex-harness-adapter doctor --harness pi
 ```
 
-Use `health` from recurring heartbeats before doing more work. A healthy loop
-has no stale leases, no failed tasks, and either no running task or one running
-task with an active lease. If a lease is still active, continue that task or
-renew the heartbeat only when more time is needed. Do not enqueue duplicates.
+`doctor` 检查运行时身份、版本和真实 PTY。模型认证是否可用需通过实际会话验证。
 
-Run events are appended to
-`~/.codex/claude-codex-adapter/runs.jsonl` by default. The registry redacts
-prompt-like fields, model responses, and secret-like values before writing. Set
-`CLAUDE_CODEX_RUN_LOG=0` to disable it, or set `CLAUDE_CODEX_RUN_LOG=/path/log`
-to choose a different JSONL file.
+## 连接 Claude Code
 
-Optional per-thread worktree isolation is controlled with
-`CLAUDE_CODEX_WORKTREE_ROOT`. Thread ids are mapped to root-confined,
-collision-resistant labels, and an existing worktree is reused when present.
-If worktree setup fails, the adapter logs the failure and keeps the original
-cwd so the app-server session can continue.
-
-GitHub issue or PR automation must go through the trust-boundary queue. Export
-only trusted metadata to local JSON, then ingest it:
-
-```bash
-gh issue list --json number,title,state,url > /tmp/github-issues.json
-npm run workflow -- ingest-github --github-json /tmp/github-issues.json
+```sh
+./bin/codex-harness-adapter init --harness claude-code
+./bin/codex-harness-adapter ssh-config --harness claude-code
+./bin/codex-harness-adapter serve --harness claude-code
 ```
 
-The ingestion step creates explicit workflow tasks from `number`, `title`,
-`state`, `url`, and item kind only. Body text, comments, reviews, and other
-external instructions are intentionally omitted from generated prompts, so a
-later agent must inspect external text through the project trust-boundary
-workflow before changing code.
+将 `ssh-config` 输出的完整片段手动加入 `~/.ssh/config`，保持 `serve` 在前台运行，然后在 Codex 桌面端的连接设置中选择 **codex-harness-adapter-claude** 并添加项目目录。
 
-## License
+## 连接 Pi
 
-[MIT](LICENSE)
+在另一个终端运行：
+
+```sh
+./bin/codex-harness-adapter init --harness pi
+./bin/codex-harness-adapter ssh-config --harness pi
+./bin/codex-harness-adapter serve --harness pi
+```
+
+添加对应 SSH 配置后，在桌面端选择 **codex-harness-adapter-pi**。两个入口可同时运行。
+
+默认端口分别是 7331、7332。需要更换端口时，对 `init`、`ssh-config` 和 `serve` 传入相同的 `--port`。所有入口固定绑定 `127.0.0.1`，仅接受专用公钥，不提供通用端口转发。
+
+按 Ctrl-C 停止前台服务。服务会清理自己的运行进程和 socket，保留会话与日志。
+
+## 状态与排障
+
+默认状态位于 `~/.codex-harness-adapter/<harness>/`。`--home` 可以指定另一个状态根目录，`--node` 和 `--root` 分别指定 Node 路径和源码根目录。
+
+- **找不到连接**：确认 SSH 配置已保存，并运行 `ssh codex-harness-adapter-pi 'codex --version'` 验证入口。
+- **运行时启动失败**：运行 `doctor --harness <名称>`，查看对应状态目录的 `runtime.log`。
+- **端口或目录被占用**：停止原服务，或为新实例选择不同的 `--home` 和 `--port`。
+- **缺少模型或认证失败**：在原生 CLI 中检查配置和登录。
+
+初始化会保留已有私钥与 HostKey。服务以当前用户身份访问本机文件，SSH 接入本身不是文件系统沙箱。
+
+### 旧版本数据
+
+这是一次破坏性整理。新版本不读取旧适配器配置名，不迁移旧适配数据库，也不解释原来的 `tyrs-*` 会话投影标记。显式传入旧数据库会报错。
+
+旧数据库和 Claude/Pi 原生会话文件不会被自动删除或批量改写。原生会话仍可由原生工具使用，但不保证恢复旧适配器的展示元数据。
+
+## 开发与集成
+
+- `packages/claude`：Claude 协议与运行时适配。
+- `packages/pi`：Pi 协议与运行时适配。
+- `packages/shared`：协议、传输、文件、终端及适配元数据基础能力。
+- `sshserver`：可供其他 Go 项目使用的 SSH 库，通过接口注入环境、授权和运行时。
+- `cmd/codex-harness-adapter`：本地前台 CLI。
+- `protocol`：固定协议契约与版本清单。
+
+```sh
+npm run typecheck
+npm run check
+npm test
+```
+
+Tyrs Hand 依赖本项目提供的适配器和 SSH 库；Control、Worker 注册、Hub、多端同步、业务授权、Discord 和部署功能继续留在 Tyrs Hand。本项目不需要安装或运行 Tyrs Hand。
+
+## 来源与许可
+
+本项目基于 [fuergaosi233/claude-codex](https://github.com/fuergaosi233/claude-codex) 扩展，保留其提交历史与版权。通用 SSH 实现提取自 Tyrs Hand。
+
+项目代码采用 [MIT](LICENSE)。第三方组件保留各自的许可，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。Claude Agent SDK 和 Claude Code 不属于本项目的 MIT 授权范围，使用时适用 Anthropic 的条款。
+
+这是独立社区项目，与 OpenAI、Anthropic 或 Pi 的维护者没有官方隶属关系。

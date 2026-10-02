@@ -12,7 +12,7 @@ import { continueWithCli } from './native-cli.mjs'
 import { assertNotification, assertResponse, assertServerRequest } from './schema.mjs'
 
 test('Pi：真实 SDK、双客户端、幂等、原生恢复、Plan、文件与停止', { timeout: 60000 }, async () => {
-  const root = await mkdtemp(join(tmpdir(), 'tyrs-pi-adapter-'))
+  const root = await mkdtemp(join(tmpdir(), 'codex-harness-adapter-pi-adapter-'))
   const agentDir = join(root, 'agent'),
     cwd = join(root, 'project')
   await mkdir(agentDir)

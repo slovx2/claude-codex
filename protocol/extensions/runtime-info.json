@@ -1,0 +1,109 @@
+{
+  "method": "runtime/info",
+  "kind": "ClientRequest",
+  "params": {
+    "type": "object",
+    "additionalProperties": false
+  },
+  "response": {
+    "type": "object",
+    "required": [
+      "engine",
+      "protocolVersion",
+      "cliBuild",
+      "capabilities",
+      "releaseReady"
+    ],
+    "properties": {
+      "engine": {
+        "enum": [
+          "claude-code",
+          "pi"
+        ]
+      },
+      "protocolVersion": {
+        "const": "0.157.1"
+      },
+      "cliBuild": {
+        "type": "string",
+        "minLength": 1
+      },
+      "capabilities": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "uniqueItems": true
+      },
+      "releaseReady": {
+        "type": "boolean"
+      },
+      "nodeVersion": {
+        "type": "string",
+        "pattern": "^\\d+\\.\\d+\\.\\d+$"
+      },
+      "sdkVersion": {
+        "type": "string",
+        "pattern": "^\\d+\\.\\d+\\.\\d+$"
+      },
+      "pluginVersions": {
+        "type": "object",
+        "required": [
+          "@narumitw/pi-plan-mode",
+          "@narumitw/pi-tui-kit",
+          "@gotgenes/pi-subagents"
+        ],
+        "properties": {
+          "@narumitw/pi-plan-mode": {
+            "type": "string",
+            "pattern": "^\\d+\\.\\d+\\.\\d+$"
+          },
+          "@narumitw/pi-tui-kit": {
+            "type": "string",
+            "pattern": "^\\d+\\.\\d+\\.\\d+$"
+          },
+          "@gotgenes/pi-subagents": {
+            "type": "string",
+            "pattern": "^\\d+\\.\\d+\\.\\d+$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "cliSha256": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      }
+    },
+    "oneOf": [
+      {
+        "properties": {
+          "engine": {
+            "const": "claude-code"
+          }
+        },
+        "required": [
+          "nodeVersion",
+          "sdkVersion",
+          "cliSha256"
+        ]
+      },
+      {
+        "properties": {
+          "engine": {
+            "const": "pi"
+          },
+          "cliBuild": {
+            "type": "string",
+            "pattern": "^\\d+\\.\\d+\\.\\d+$"
+          }
+        },
+        "required": [
+          "nodeVersion",
+          "sdkVersion",
+          "pluginVersions"
+        ]
+      }
+    ],
+    "additionalProperties": false
+  }
+}

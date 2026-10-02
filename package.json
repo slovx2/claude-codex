@@ -1,20 +1,20 @@
 {
-  "name": "claude-codex-adapter",
-  "version": "0.1.0",
+  "name": "codex-harness-adapter",
+  "version": "0.2.0",
   "private": true,
-  "description": "Remote-mode adapter that lets the Codex desktop app talk to Claude Code through the Codex app-server protocol.",
+  "description": "在 Codex 桌面端连接各种 harness",
   "license": "MIT",
-  "homepage": "https://fuergaosi233.github.io/claude-codex/",
+  "homepage": "https://github.com/slovx2/codex-harness-adapter",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/slovx2/claude-codex.git"
+    "url": "git+https://github.com/slovx2/codex-harness-adapter.git"
   },
   "bugs": {
-    "url": "https://github.com/fuergaosi233/claude-codex/issues"
+    "url": "https://github.com/slovx2/codex-harness-adapter/issues"
   },
   "type": "module",
   "bin": {
-    "claude-codex-adapter": "dist/src/adapter.mjs"
+    "codex-harness-adapter": "bin/codex-harness-adapter"
   },
   "files": [
     "dist/",
@@ -25,20 +25,20 @@
     "CONTRIBUTING.md"
   ],
   "scripts": {
-    "dev": "tsx src/adapter.mts",
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "biome lint src test scripts",
-    "format": "biome format --write src test scripts",
-    "check": "biome check src test scripts",
-    "check:fix": "biome check --write src test scripts",
+    "dev": "tsx packages/claude/src/adapter.mts",
+    "build": "npm run build --prefix packages/claude && npm run build --prefix packages/pi && go build -o bin/codex-harness-adapter ./cmd/codex-harness-adapter",
+    "typecheck": "npm run typecheck --prefix packages/claude && npm run typecheck --prefix packages/pi",
+    "lint": "biome lint packages scripts",
+    "format": "biome format --write packages scripts",
+    "check": "biome check packages scripts",
+    "check:fix": "biome check --write packages scripts",
     "check:rust-protocol-fixtures": "node scripts/check-rust-protocol-fixtures.mjs",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
-    "test": "npm run build && node --test dist/test/*.mjs",
-    "doctor": "node scripts/doctor.mjs",
-    "workflow": "npm run build && node dist/src/workflow-cli.mjs",
+    "test": "npm run test --prefix packages/claude && npm run test --prefix packages/pi && go test ./...",
+    "doctor": "bin/codex-harness-adapter doctor",
+    "workflow": "npm run build && node packages/claude/dist/claude/src/workflow-cli.mjs",
     "workflow:schedule": "npm run workflow -- schedule",
     "smoke:real": "npm run build && node scripts/smoke-real-claude.mjs",
     "probe:capabilities": "npm run build && node scripts/probe-capabilities.mjs",
@@ -46,16 +46,14 @@
     "acceptance:gui-ssh-localhost": "npm run build && node scripts/acceptance-gui-ssh-localhost.mjs",
     "acceptance:ssh-runtime-matrix": "npm run build && node scripts/acceptance-ssh-runtime-matrix.mjs",
     "probe:codex-cli-remote": "npm run build && node scripts/probe-codex-cli-remote.mjs",
-    "start": "node dist/src/adapter.mjs",
+    "start": "bin/codex-harness-adapter serve",
     "generate:schema": "codex app-server generate-ts --experimental --out generated/codex-app-server",
-    "test:protocol": "npm run build && node scripts/test-protocol.mjs"
+    "test:protocol": "npm run build && node scripts/test-protocol.mjs",
+    "test:local-ssh": "node scripts/test-local-ssh.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.282",
-    "@modelcontextprotocol/sdk": "1.29.0",
     "ajv": "8.20.0",
-    "ws": "8.21.3",
-    "yaml": "2.8.2"
+    "ws": "8.21.3"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",

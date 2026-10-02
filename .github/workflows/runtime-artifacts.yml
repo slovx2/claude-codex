@@ -1,0 +1,24 @@
+name: Runtime artifacts
+on:
+  workflow_dispatch:
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.14.0
+          cache: npm
+      - name: 沙箱依赖
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends bubblewrap=0.9.0-1ubuntu0.3 socat=1.8.0.0-4ubuntu0.1
+      - run: sh scripts/package-claude-runtime.sh . .artifacts/runtime
+      - run: sh scripts/package-pi-runtime.sh . .artifacts/runtime
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: linux-amd64-runtimes
+          path: .artifacts/runtime
+          if-no-files-found: error

@@ -5,7 +5,7 @@ __pycache__/
 *.pyc
 generated/
 .venv/
-.claude-codex/
+.codex-harness-adapter/
 *.sqlite
 *.sqlite-*
 *.sock
@@ -14,3 +14,8 @@ generated/
 **/.vitepress/cache/
 
 .artifacts/
+bin/
+.env
+.env.*
+!.env.example
+*.log

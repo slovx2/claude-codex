@@ -5,8 +5,8 @@ import net from 'node:net'
 import { join, resolve } from 'node:path'
 
 const root = resolve('.')
-const adapter = resolve('dist/src/adapter.mjs')
-const probeRoot = resolve('.claude-codex')
+const adapter = resolve('packages/claude/dist/claude/src/adapter.mjs')
+const probeRoot = resolve('.codex-harness-adapter')
 await mkdir(probeRoot, { recursive: true })
 const home = await mkdtemp(join(probeRoot, 'codex-cli-remote-probe-'))
 const adapterHome = join(home, 'adapter-home')
@@ -21,7 +21,7 @@ try {
   adapterProc = spawn(process.execPath, [adapter, 'app-server', '--listen', remote], {
     cwd: root,
     stdio: ['ignore', 'ignore', 'pipe'],
-    env: { ...process.env, CODEX_HOME: adapterHome, CLAUDE_CODEX_MOCK: '1', NODE_NO_WARNINGS: '1' },
+    env: { ...process.env, CODEX_HOME: adapterHome, CHA_CLAUDE_MOCK: '1', NODE_NO_WARNINGS: '1' },
   })
   adapterProc.stderr.setEncoding('utf8')
   adapterProc.stderr.on('data', (chunk) => {
@@ -129,7 +129,7 @@ try {
   if (!(error instanceof ProbeDone)) throw error
 } finally {
   adapterProc?.kill()
-  if (process.env.CLAUDE_CODEX_CLEAN_PROBE_ARTIFACTS === '1') {
+  if (process.env.CHA_CLAUDE_CLEAN_PROBE_ARTIFACTS === '1') {
     await rm(home, { recursive: true, force: true })
   }
 }

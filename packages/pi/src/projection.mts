@@ -161,7 +161,7 @@ export function projectHistory(entries: any[], thread: PiThread): PiTurn[] {
   const pendingClientIds: string[] = []
   const calls = new Map<string, { item: any; args: any }>()
   for (const entry of entries) {
-    if (entry.type === 'custom' && entry.customType === 'tyrs-file-change') {
+    if (entry.type === 'custom' && entry.customType === 'codex-harness-adapter-file-change') {
       const call = calls.get(entry.data.id)
       if (call)
         call.item.changes = entry.data.changes.map((change: any) =>
@@ -185,7 +185,7 @@ export function projectHistory(entries: any[], thread: PiThread): PiTurn[] {
               },
             }
     }
-    if (entry.type === 'custom' && entry.customType === 'tyrs-turn') {
+    if (entry.type === 'custom' && entry.customType === 'codex-harness-adapter-turn') {
       turn = {
         ...entry.data,
         items: [],
@@ -199,11 +199,15 @@ export function projectHistory(entries: any[], thread: PiThread): PiTurn[] {
       pendingClientIds.length = 0
       if (entry.data.clientId) pendingClientIds.push(entry.data.clientId)
     }
-    if (entry.type === 'custom' && entry.customType === 'tyrs-steer' && entry.data.clientId)
+    if (
+      entry.type === 'custom' &&
+      entry.customType === 'codex-harness-adapter-steer' &&
+      entry.data.clientId
+    )
       pendingClientIds.push(entry.data.clientId)
     if (
       entry.type === 'custom' &&
-      entry.customType === 'tyrs-turn-end' &&
+      entry.customType === 'codex-harness-adapter-turn-end' &&
       turn &&
       turn.id === entry.data?.id
     ) {
@@ -231,7 +235,9 @@ export function projectHistory(entries: any[], thread: PiThread): PiTurn[] {
     if (
       !turn ||
       ended ||
-      (msg.role === 'user' && turn.items.length && (ended || !turn.id.startsWith('tyrs:')))
+      (msg.role === 'user' &&
+        turn.items.length &&
+        (ended || !turn.id.startsWith('codex-harness-adapter:')))
     ) {
       turn = {
         id: `native:${entry.id}`,

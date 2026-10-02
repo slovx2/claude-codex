@@ -3,7 +3,7 @@
 version = 3
 
 [[package]]
-name = "claude-codex-protocol"
+name = "codex-harness-adapter-protocol"
 version = "0.1.0"
 dependencies = [
  "serde",

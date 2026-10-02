@@ -12,7 +12,7 @@ npm run probe:codex-cli-remote        # probes the local codex --remote CLI beha
 ## What each check does
 
 - **`acceptance:local-remote`** creates an ignored
-  `.claude-codex/local-remote-acceptance-*` directory, installs the shim into a
+  `.codex-harness-adapter/local-remote-acceptance-*` directory, installs the shim into a
   temporary `PATH`, starts the Unix-socket daemon, connects through `app-server
   proxy`, auto-approves Claude Code file edits, and verifies that Claude creates
   a file in the temporary workspace.
@@ -25,10 +25,10 @@ npm run probe:codex-cli-remote        # probes the local codex --remote CLI beha
 
 - **`probe:codex-cli-remote`** starts the adapter in mock WebSocket mode and
   tries the currently installed `codex --remote ws://...` CLI. It keeps a
-  transcript under `.claude-codex/codex-cli-remote-probe-*`. In a desktop flow
+  transcript under `.codex-harness-adapter/codex-cli-remote-probe-*`. In a desktop flow
   the app supplies its own interactive/auth context; the CLI probe reports
   `blocked-login`, `blocked-timeout`, or `blocked-no-tty` when the local CLI
   cannot complete an automated remote prompt.
 
 Acceptance and probe transcripts are written under the git-ignored
-`.claude-codex/` directory.
+`.codex-harness-adapter/` directory.

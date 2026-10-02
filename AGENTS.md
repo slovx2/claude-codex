@@ -1,68 +1,31 @@
-# AGENTS.md
+# 开发约定
 
-Guidance for AI agents (Codex, Claude Code) working in this repo. This is the
-**root** of a progressive set — each major directory has its own focused
-`AGENTS.md` that you should read when you start editing files there:
+本项目将 Claude Code、Pi 等 harness 接入 Codex app-server 协议。
 
-- [`src/AGENTS.md`](src/AGENTS.md) — adapter internals, runtime interface.
-- [`scripts/AGENTS.md`](scripts/AGENTS.md) — shim, mode helper, hooks, checks.
-- [`test/AGENTS.md`](test/AGENTS.md) — test layout and how to run them.
+- 用中文写新增注释与维护文档。在当前分支工作，不创建 worktree。
+- `packages/claude`、`packages/pi` 是并列适配器；`packages/shared` 只承载共享能力。
+- `sshserver` 是通用 Go 库，不允许依赖 Tyrs Hand。`cmd/codex-harness-adapter` 是仅监听本机的 CLI。
+- TypeScript 使用 `.mts`、ESM、可擦除语法；不手工修改 `dist` 或生成的协议材料。
+- 依赖必须使用精确版本，版本组合见 `protocol/versions.json`。
+- 旧适配数据库直接拒绝，不增加旧环境变量、持久化标记或路径回退。
+- 修改应分小块进行，每次尽量不超过 300 行。
 
-## What this is
+## 构建和检查
 
-A remote-mode adapter that lets the **Codex desktop app** talk to **Claude
-Code** through the native Codex `app-server` protocol. Codex App runs its normal
-SSH probe/bootstrap; a `codex` shim earlier in `PATH` routes `codex app-server`
-calls to this adapter instead of the real Codex runtime.
+使用 Node 24.14.0、Go 1.26.6。
 
-## Build & test
-
-```bash
-npm install
-npm run dev            # tsx src/adapter.mts — run sources directly, no build
-npm run build          # tsc -> dist/ (production artifact)
-npm run typecheck      # tsc --noEmit
-npm run check          # biome format + lint (read-only)
-npm run check:fix      # biome auto-fix (format + safe lint)
-npm test               # build + node --test dist/test/*.mjs
-npm run doctor         # environment self-check
+```sh
+npm ci
+npm ci --prefix packages/claude
+npm ci --prefix packages/pi
+npm run build
+npm run check:fix
+npm run typecheck
+npm test
 ```
 
-**Build constraint: Node.js 24+ is required.** The store uses `node:sqlite`,
-which Node 22 hides behind `--experimental-sqlite` (not passed), so it crashes
-at runtime on 22. Pin a binary with `CLAUDE_CODEX_NODE` if the default `node`
-is older. `engines.node` enforces `>=24`.
+真实 Claude SDK 测试需通过 `CHA_CLAUDE_CLI` 指定隔离的官方 CLI。
+测试不得继承个人模型凭据；使用回环 mock provider。
+`npm run test:local-ssh` 验证真实 SSH 与 SDK，但不代表真实桌面 UI 验收。
 
-The fast dev loop is `npm run dev` (tsx runs `.mts` directly). The code is kept
-**erasable** (see conventions), so on Node 24 you can also run sources with the
-built-in stripper: `node src/adapter.mts`. Production still ships compiled `.mjs`
-so a remote host needs only `node` — no TS toolchain.
-
-## Project-wide conventions
-
-- TypeScript **ESM only**: `.mts` sources under `src/` compile to `.mjs` under
-  `dist/`. `npm run dev` runs sources directly; `npm test` builds first.
-- **Erasable syntax only** (`erasableSyntaxOnly` in tsconfig): no `enum`,
-  `namespace`, or constructor parameter properties — declare fields explicitly
-  and assign in the constructor body. This keeps `tsx` / native type stripping
-  working.
-- **Never hand-edit `dist/` or `generated/`** — they are produced by
-  `npm run build` and `npm run generate:schema`.
-- Formatting/linting is **Biome** (`biome.json`): 2-space, single quotes, no
-  semicolons, lineWidth 100. Run `npm run check:fix` before committing.
-- Config is env-driven (`CLAUDE_CODEX_*`); the full list lives in the README.
-- `CLAUDE_CODEX_MOCK=1` runs the protocol without Claude credentials.
-- Match the comment density and naming of surrounding code. Keep modules
-  focused — see the file-length nudge below.
-
-## Hooks (enforced automatically)
-
-`.claude/settings.json` wires `scripts/hooks/guard.mjs` into Claude Code:
-
-- **PreToolUse** blocks edits to `dist/` and `generated/` (build artifacts).
-- **PostToolUse** warns when a source file isn't `.mts` under `src/`, when
-  runtime code lands outside a `*-runtime.mts` module, or when a `.mts` file
-  grows past ~1000 lines.
-
-These are advisory guardrails for the architecture and length checks; the script
-exits 0 on any internal error so it can never wedge a session.
+包内约定见各自 `src/AGENTS.md`、`test/AGENTS.md`，脚本约定见 `scripts/AGENTS.md`。

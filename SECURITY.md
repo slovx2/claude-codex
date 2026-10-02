@@ -1,6 +1,6 @@
 # Security Policy
 
-Claude Codex Adapter is a community project. Security reports are handled on a
+Codex Harness Adapter is a community project. Security reports are handled on a
 best-effort basis by the maintainers.
 
 ## Reporting a vulnerability
@@ -39,4 +39,4 @@ persist, print, or redistribute those credentials.
 
 For tests that need real Claude access, run them only in an environment where
 the required credentials are already provided by the user. Use
-`CLAUDE_CODEX_MOCK=1` for protocol tests that do not require live credentials.
+`CHA_CLAUDE_MOCK=1` for protocol tests that do not require live credentials.

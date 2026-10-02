@@ -20,7 +20,7 @@ Agent SDK sidecar; runtime selection is pluggable. Status legend: **Supported**,
 
 | Backend | Status | Notes |
 | --- | --- | --- |
-| Selection mechanism | Supported | `CLAUDE_CODEX_RUNTIME_TYPE` picks native `codex` passthrough (shim) or adapter runtimes. Switch with `claude-codex-mode` on the host and reconnect. |
+| Selection mechanism | Supported | `CHA_CLAUDE_RUNTIME_TYPE` picks native `codex` passthrough (shim) or adapter runtimes. Switch with `codex-harness-adapter-mode` on the host and reconnect. |
 | agent-sdk-sidecar (default) | Supported | In-process Claude Agent SDK; full tool/permission/reasoning events. |
 | agent-http / Channels | Experimental | Consumes `POST /message`, `GET /messages|/status|/events`; message-level deltas only, no semantic tool/permission/reasoning events. |
 | agentapi | Experimental | Same HTTP/SSE client against coder/agentapi; terminal-derived text only, no structured tool events. |
@@ -31,15 +31,15 @@ Agent SDK sidecar; runtime selection is pluggable. Status legend: **Supported**,
 | Area | Status | Notes |
 | --- | --- | --- |
 | Model mapping | Supported | Native Claude aliases pass through; unknown Codex/OpenAI ids fall back to the default model. App model/effort selections are remembered and echoed via `config/read`. |
-| Reasoning effort | Best effort | Codex efforts normalized, mappable via `CLAUDE_CODEX_EFFORT_ALIASES`; older SDKs may ignore unsupported options. |
-| Structured title/summary turns | Supported (fallback) | Codex internal model ids (e.g. gpt-5.4-mini) map to `CLAUDE_CODEX_SUMMARY_MODEL` (default haiku) when an outputSchema is present; falls back to schema-shaped JSON if Claude emits plain text. |
+| Reasoning effort | Best effort | Codex efforts normalized, mappable via `CHA_CLAUDE_EFFORT_ALIASES`; older SDKs may ignore unsupported options. |
+| Structured title/summary turns | Supported (fallback) | Codex internal model ids (e.g. gpt-5.4-mini) map to `CHA_CLAUDE_SUMMARY_MODEL` (default haiku) when an outputSchema is present; falls back to schema-shaped JSON if Claude emits plain text. |
 | SDK option compatibility | Supported | When an older SDK rejects an option, the sidecar drops it one at a time (least essential first) and emits an info notice. |
 
 ## Tools, approvals & events
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Claude Code tools | Supported | Not restricted by default; set `CLAUDE_CODEX_ALLOWED_TOOLS` to restrict. |
+| Claude Code tools | Supported | Not restricted by default; set `CHA_CLAUDE_ALLOWED_TOOLS` to restrict. |
 | Approval policy / sandbox | Supported | App's approvalPolicy + sandbox persist on the thread and map to Claude permission_mode. "Full access" drops the can_use_tool callback; read-only restricts tools to read/search. |
 | Bash approval | Supported | can_use_tool → Codex `item/commandExecution/requestApproval`. Bypassed when approvalPolicy=never / Full access. |
 | File edit approval | Supported | Edit/Write/MultiEdit → Codex fileChange items with approval + diff updates. |
@@ -79,7 +79,7 @@ Agent SDK sidecar; runtime selection is pluggable. Status legend: **Supported**,
 
 The adapter advertises codex app-server protocol **v2 @ 0.142.3** (via
 `codex --version` and the `initialize` userAgent; override with
-`CLAUDE_CODEX_COMPAT_VERSION`). The 0.130 → 0.142 delta is additive and
+`CHA_CLAUDE_COMPAT_VERSION`). The 0.130 → 0.142 delta is additive and
 backward-compatible: new optional request methods (`thread/search`,
 `thread/delete`, `account/usage/read`, `plugin/*`, `remoteControl/*`,
 `environment/add`, …) plus widened enums (`ReasoningEffort` → free-form string,
@@ -92,9 +92,9 @@ schema under `generated/` with `npm run generate:schema` (needs a matching
 
 Because the adapter now reports the same version as a real `codex`, it appends a
 distinguishing suffix: `codex --version` prints `codex-cli 0.142.3
-(claude-codex)` and the `initialize` userAgent carries `claude-codex` in its
+(codex-harness-adapter)` and the `initialize` userAgent carries `codex-harness-adapter` in its
 originator field. The version number stays first so the App's semver probe still
-parses it. Set `CLAUDE_CODEX_VERSION_SUFFIX=""` to behave exactly like upstream
+parses it. Set `CHA_CLAUDE_VERSION_SUFFIX=""` to behave exactly like upstream
 codex.
 
 ## Wire conformance

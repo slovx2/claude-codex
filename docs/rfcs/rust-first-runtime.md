@@ -2,7 +2,7 @@
 
 ## Summary
 
-Claude Codex Adapter should become Rust-first by moving the parts that most need
+Codex Harness Adapter should become Rust-first by moving the parts that most need
 strict protocol typing, durable process boundaries, and host-level portability
 behind narrow interfaces. The current TypeScript app-server adapter remains the
 shipping product while Rust components are introduced as opt-in, testable
@@ -74,7 +74,7 @@ release path and add seams that can be verified independently.
 | Transport daemon and proxy | Own stdio/WebSocket/Unix-socket framing, socket path validation, pidfile lifecycle, and proxy byte forwarding. | `CodexClaudeAppServer` request handling. | Transport behavior is process/OS heavy and has a narrow JSON-RPC message boundary. |
 | Store/session persistence | Provide a typed SQLite store for threads, turns, migrations, and stale-turn recovery. | In-memory active-turn state and runtime callbacks. | Persistence has stable CRUD boundaries and migration risk that can be tested with fixtures. |
 | Diff/patch utilities | Compute file-change summaries and git/untracked diffs behind a CLI or native addon boundary. | Approval policy decisions and UI notification timing. | Diff behavior is deterministic and can be covered with fixture repositories. |
-| CLI shim / host launcher | Eventually replace shell-heavy host helpers with a compiled launcher that locates Node/Rust binaries and forwards `codex app-server` calls. | Current `scripts/codex-shim` and `scripts/claude-codex-mode`. | Host bootstrap is platform-sensitive; it should move only after transport and packaging are understood. |
+| CLI shim / host launcher | Eventually replace shell-heavy host helpers with a compiled launcher that locates Node/Rust binaries and forwards `codex app-server` calls. | Current `scripts/codex-shim` and `scripts/codex-harness-adapter-mode`. | Host bootstrap is platform-sensitive; it should move only after transport and packaging are understood. |
 | Runtime hosting | Long-term: a Rust supervisor can host TS/SDK or subprocess runtimes via a stable event protocol. | Claude Agent SDK integration and all runtime modules. | Claude SDK semantics are still moving; runtime rewrite should wait until protocol and transport are stable. |
 
 The first boundary should be protocol codec and schema mirror. It is the least
@@ -92,7 +92,7 @@ behavior changes.
 
 Add a minimal Rust workspace under a proposed path such as `crates/` with:
 
-- a protocol crate name such as `claude-codex-protocol`;
+- a protocol crate name such as `codex-harness-adapter-protocol`;
 - a checked-in README explaining that it is not used by production yet;
 - fixtures for a small set of Codex app-server envelopes, for example
   `initialize`, `thread/start`, `turn/started`, `turn/completed`, and
@@ -217,7 +217,7 @@ implementation detail.
 
 The first implementation PR should be intentionally small:
 
-- add `crates/claude-codex-protocol/` or equivalent;
+- add `crates/codex-harness-adapter-protocol/` or equivalent;
 - add a crate README and 3-5 JSON fixtures copied from existing mock protocol
   tests;
 - add `cargo test` coverage for parsing and serializing those fixtures;

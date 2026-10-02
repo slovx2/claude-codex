@@ -23,7 +23,7 @@ Codex App's model menu stays a **model selector** only — pick `Claude Sonnet`,
 
 The default picker exposes Claude Code aliases; model availability and the version
 an alias selects depend on your account, provider, and Claude Code version. The
-list is not an account entitlement check. `CLAUDE_CODEX_MODELS` replaces the
+list is not an account entitlement check. `CHA_CLAUDE_MODELS` replaces the
 default Claude list when you need to customize it.
 
 **Claude Opus Plan / Sonnet Execute** keeps the `opus-plan` option ID and maps to Claude
@@ -39,11 +39,11 @@ runtime invokes the Claude Code CLI directly — no external daemon to manage. P
 these lightweight exports in `~/.zshenv`:
 
 ```bash
-REPO="$HOME/path/to/claude-codex"
+REPO="$HOME/path/to/codex-harness-adapter"
 export PATH="$HOME/bin:$PATH"
-export CLAUDE_CODEX_ADAPTER="$REPO/dist/src/adapter.mjs"
-export CLAUDE_CODEX_NODE="$(command -v node)"
-export CLAUDE_CODEX_CLI="$(command -v claude)"
+export CHA_CLAUDE_ADAPTER="$REPO/packages/claude/dist/claude/src/adapter.mjs"
+export CHA_CLAUDE_NODE="$(command -v node)"
+export CHA_CLAUDE_CLI="$(command -v claude)"
 export CODEX_REAL="$(command -v codex)"
 ```
 

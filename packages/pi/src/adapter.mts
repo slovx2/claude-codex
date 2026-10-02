@@ -20,7 +20,7 @@ async function main(): Promise<void> {
   validateInstalledVersions()
   const args = process.argv.slice(2)
   if (args[0] === '--version' || args[0] === '-V') {
-    process.stdout.write(`${codexCliVersion(versions.protocol, 'pi-codex')}\n`)
+    process.stdout.write(`${codexCliVersion(versions.protocol, 'codex-harness-adapter-pi')}\n`)
     return
   }
   if (args[0] === '--runtime-info') {
@@ -40,7 +40,9 @@ async function main(): Promise<void> {
     return
   }
   if (args[0] !== 'app-server')
-    throw new Error('用法: pi-codex app-server [--listen stdio://|unix://PATH|ws://HOST:PORT]')
+    throw new Error(
+      '用法: codex-harness-adapter-pi app-server [--listen stdio://|unix://PATH|ws://HOST:PORT]',
+    )
   if (args.includes('proxy')) {
     await runProxy(parseProxySockArg(args.slice(args.indexOf('proxy') + 1)))
     return
@@ -51,7 +53,7 @@ async function main(): Promise<void> {
   )
   if (listen === 'off') return
   const server = new PiServer(
-    resolve(process.env.PI_ADAPTER_HOME ?? join(homedir(), '.local/share/tyrs-hand/pi')),
+    resolve(process.env.CHA_PI_HOME ?? join(homedir(), '.codex-harness-adapter/pi')),
   )
   let transport: Awaited<ReturnType<typeof startWebSocketTransport>>
   let closing = false

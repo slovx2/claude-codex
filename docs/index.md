@@ -1,76 +1,13 @@
----
-layout: home
+# codex-harness-adapter
 
-hero:
-  name: Claude Codex Adapter
-  text: Claude Code inside the Codex app
-  tagline: A production TypeScript adapter that speaks the native Codex app-server protocol, so the Codex desktop app drives Claude Code over your normal SSH Remote flow.
-  actions:
-    - theme: brand
-      text: Get started
-      link: /guide/getting-started
-    - theme: alt
-      text: Configuration
-      link: /guide/configuration
-    - theme: alt
-      text: View on GitHub
-      link: https://github.com/fuergaosi233/claude-codex
+在 Codex 桌面端连接各种 harness。
 
-features:
-  - icon: 🔌
-    title: Native protocol, no fork
-    details: Codex App runs its usual SSH probe, bootstrap, and app-server proxy. A codex shim earlier in PATH routes only app-server calls into the adapter.
-  - icon: 🧠
-    title: Claude Code turns
-    details: Agent text and reasoning stream into the conversation; Bash becomes command approvals; Edit/Write/MultiEdit become file-change approvals with live diffs.
-  - icon: 🔁
-    title: Explicit existing backends
-    details: >-
-      Provider and loop selection is sanitized metadata that maps known
-      descriptors to existing runtime paths: Agent SDK, agent-http, agentapi,
-      claude-p, codex-proxy, and mock.
-  - icon: 📦
-    title: Zero-toolchain deploy
-    details: Ships compiled ESM .mjs, so a remote host needs only Node 24. Dev runs straight from TypeScript with tsx.
----
+目前支持 Claude Code 和 Pi，通过本机 SSH 提供独立入口。引擎保留自己的原生会话、工具和配置。
 
-## What it does
+从[源码安装与连接说明](https://github.com/slovx2/codex-harness-adapter#从源码构建)开始。
 
-The adapter implements the Codex `app-server` v2 protocol (stdio, WebSocket,
-Unix-socket daemon, and `app-server proxy`) and bridges each Codex request to a
-Claude Code runtime. Thread lifecycle, streaming, approvals, MCP, and remote
-filesystem/command utilities are all backed by real runtime behavior.
+- [协议能力](./reference/protocol-coverage)
+- [配置参考](./guide/configuration)
+- [许可与来源](https://github.com/slovx2/codex-harness-adapter/blob/main/THIRD_PARTY_NOTICES.md)
 
-The current release path is intentionally narrow. TypeScript remains the
-production runtime. Rust-first work is present as RFCs, an experimental protocol
-crate, fixtures, parse/reserialize tests, and a pinned fixture drift gate, but it
-does not replace the runtime, transport, store, or launcher. Provider and
-agent-loop work exposes descriptors, sanitized config projection, and explicit
-selection for known descriptors only; it does not add a new provider runtime,
-auth system, gateway, subscription model, or multi-agent orchestrator.
-
-Credentials should be supplied by the local user or organization through API
-keys, official cloud-provider credential chains, same-host local CLI auth, or an
-approved organization gateway. The project does not support personal
-subscription pooling, browser cookie/session-token reuse, credential sharing,
-private endpoints, provider bypasses, or claims of unavailable entitlements.
-Release checks include CI `check`, `cargo-test`, TypeScript tests, the pinned
-Rust fixture drift gate, docs build for docs changes, and opt-in credentialed
-smoke or acceptance checks.
-
-```bash
-npm install
-npm run build        # tsc -> dist/ (production artifact)
-npm run dev          # tsx src/adapter.mts — run sources directly
-npm run doctor       # environment self-check
-```
-
-Then install the [`codex` shim](/guide/deployment) on the remote host and add a
-Remote connection in the Codex App. See **[Getting started](/guide/getting-started)**.
-
-For release gates and reviewer expectations, see
-**[Release readiness](/reference/release-readiness)**.
-
-::: tip Requires Node.js 24+
-The thread store uses `node:sqlite`, which is only stable (unflagged) on Node 24.
-:::
+项目处于开发阶段，当前固定 Codex app-server 0.157.1。桌面 GUI 与不同客户端版本的支持情况应以实际验收记录为准。

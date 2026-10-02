@@ -199,7 +199,7 @@ export async function openSession(thread: PiThread, host: SessionHost): Promise<
         if (file && externalLeaf) {
           session.sessionManager.setSessionFile(file)
           session.sessionManager.branch(externalLeaf)
-          session.sessionManager.appendCustomEntry('tyrs-external-resume', {})
+          session.sessionManager.appendCustomEntry('codex-harness-adapter-external-resume', {})
         }
         session.dispose()
       }

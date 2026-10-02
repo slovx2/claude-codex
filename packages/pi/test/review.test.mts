@@ -22,13 +22,13 @@ test('Desktop initialize 与 CLI 探测均报告固定 Codex 协议版本，Pi �
   assertResponse('initialize', response)
   const reported = response.userAgent.match(/^[^/]+\/([^ ]+)/)?.[1]
   assert.equal(reported, '0.157.1')
-  assert.match(response.userAgent, /\) pi-codex \(codex-app; desktop-test\)$/)
+  assert.match(response.userAgent, /\) codex-harness-adapter-pi \(codex-app; desktop-test\)$/)
   const cli = execFileSync(
     process.execPath,
     [fileURLToPath(new URL('../src/adapter.mjs', import.meta.url)), '--version'],
     { encoding: 'utf8' },
   )
-  assert.equal(cli.trim(), `codex-cli ${reported} (pi-codex)`)
+  assert.equal(cli.trim(), `codex-cli ${reported} (codex-harness-adapter-pi)`)
 })
 
 test('Plan 命令只通知不启动时结束失败回合，停止不占锁', { timeout: 5000 }, async () => {
@@ -217,7 +217,7 @@ test('旧 write 历史的 add 使用正文，十字节无换行不会把 diff �
       },
       {
         type: 'custom',
-        customType: 'tyrs-file-change',
+        customType: 'codex-harness-adapter-file-change',
         data: {
           id: 'write',
           changes: [

@@ -8,17 +8,17 @@ import { Duplex } from 'node:stream'
 import WebSocket from 'ws'
 
 const root = resolve('.')
-const adapter = resolve('dist/src/adapter.mjs')
+const adapter = resolve('packages/claude/dist/claude/src/adapter.mjs')
 const shimSource = resolve('scripts/codex-shim')
 const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-const base = resolve('.claude-codex', `local-remote-acceptance-${stamp}`)
+const base = resolve('.codex-harness-adapter', `local-remote-acceptance-${stamp}`)
 const home = join(base, 'codex-home')
 const bin = join(base, 'bin')
 const workspace = join(base, 'workspace')
 const shim = join(bin, 'codex')
 const socketPath = join(home, 'app-server-control', 'app-server-control.sock')
-const targetFile = join(workspace, 'claude-codex-remote-acceptance.txt')
-const expectedText = 'claude-codex-remote-file-ok'
+const targetFile = join(workspace, 'codex-harness-adapter-remote-acceptance.txt')
+const expectedText = 'codex-harness-adapter-remote-file-ok'
 
 let daemon = null
 let proxy = null
@@ -38,10 +38,10 @@ async function main() {
     ...process.env,
     PATH: `${bin}:${process.env.PATH ?? ''}`,
     CODEX_HOME: home,
-    CLAUDE_CODEX_ADAPTER: adapter,
+    CHA_CLAUDE_ADAPTER: adapter,
     NODE_NO_WARNINGS: '1',
   }
-  delete env.CLAUDE_CODEX_MOCK
+  delete env.CHA_CLAUDE_MOCK
 
   const version = run('codex', ['--version'], env)
   assert.match(version.stdout, /codex-cli/)
@@ -100,7 +100,7 @@ async function main() {
           type: 'text',
           text: [
             'Use Claude Code tools in the current working directory.',
-            `Create or overwrite a file named claude-codex-remote-acceptance.txt with exactly this content and no extra whitespace: ${expectedText}`,
+            `Create or overwrite a file named codex-harness-adapter-remote-acceptance.txt with exactly this content and no extra whitespace: ${expectedText}`,
             `After the file is written, reply with exactly: ${expectedText}`,
           ].join('\n'),
           text_elements: [],
@@ -210,7 +210,7 @@ async function waitForSocket(path) {
 }
 
 function daemonSocketPathFromStderr() {
-  const marker = '[claude-codex-adapter] listening on '
+  const marker = '[codex-harness-adapter] listening on '
   const index = daemonStderr.lastIndexOf(marker)
   if (index < 0) return null
   const line = daemonStderr

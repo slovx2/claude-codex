@@ -7,10 +7,10 @@ plain `.mjs` / shell.
 ## Map
 
 - `codex-shim` — the `PATH` shim Codex App invokes. Routes `codex app-server`
-  into the adapter (`CLAUDE_CODEX_ADAPTER`); forwards everything else to the real
+  into the adapter (`CHA_CLAUDE_ADAPTER`); forwards everything else to the real
   Codex CLI (`CODEX_REAL`). Keep it dependency-free and POSIX-sh portable.
-- `claude-codex-mode` — host helper to switch runtime backends, restart bridges,
-  and read status/logs. Writes `~/.claude-codex/runtime.env`.
+- `codex-harness-adapter-mode` — host helper to switch runtime backends, restart bridges,
+  and read status/logs. Writes `~/.codex-harness-adapter/runtime.env`.
 - `hooks/guard.mjs` — Claude Code hook enforcing project conventions (blocks
   build-artifact edits; warns on non-`.mts` src, misplaced runtime code, and
   files > ~1000 lines). Wired in `.claude/settings.json`. Must exit 0 on any
@@ -18,7 +18,7 @@ plain `.mjs` / shell.
 - `doctor.mjs` — environment self-check (`npm run doctor`).
 - `smoke-real-claude.mjs` — round-trips a real Claude turn (`npm run smoke:real`).
 - `acceptance-*.mjs` — end-to-end checks (local-remote, gui-ssh-localhost,
-  ssh-runtime-matrix); transcripts land under git-ignored `.claude-codex/`.
+  ssh-runtime-matrix); transcripts land under git-ignored `.codex-harness-adapter/`.
 - `probe-*.mjs` — capability / codex-cli-remote probes.
 
 ## Conventions
@@ -30,4 +30,4 @@ plain `.mjs` / shell.
 - When adding a hook, branch on `hook_event_name`, read JSON from stdin, and
   fail open (exit 0) on error.
 - `.mjs` scripts are Biome-formatted (`npm run format` covers `scripts/`); the
-  shell scripts (`codex-shim`, `claude-codex-mode`) are left untouched.
+  shell scripts (`codex-shim`, `codex-harness-adapter-mode`) are left untouched.

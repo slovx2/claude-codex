@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { ProtocolError, submissionHash } from '../../shared/src/protocol-contract.mjs'
+import { assertStoreFormat, initializeStoreFormat } from '../../shared/src/store-format.mjs'
 import { ensureParent } from '../../shared/src/util.mjs'
 
 export interface PiThread {
@@ -34,8 +35,10 @@ export class PiStore {
   readonly db: DatabaseSync
   constructor(home: string) {
     const path = join(home, 'adapter.sqlite')
+    assertStoreFormat(path)
     ensureParent(path)
     this.db = new DatabaseSync(path)
+    initializeStoreFormat(this.db)
     this.db.exec(`PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS threads(id TEXT PRIMARY KEY, data TEXT NOT NULL,
         updated_at INTEGER NOT NULL, ephemeral INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0);
