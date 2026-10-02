@@ -197,6 +197,8 @@ export async function dispatch(s: PiServer, peer: RpcPeer, method: string, p: an
       const cwd = p.cwd ?? process.cwd()
       if (typeof cwd !== 'string' || !isAbsolute(cwd))
         throw new ProtocolError(-32602, 'cwd 必须是绝对路径')
+      if (p.historyMode != null && p.historyMode !== 'legacy' && p.historyMode !== 'paginated')
+        throw new ProtocolError(-32602, 'historyMode 无效')
       const now = Math.floor(Date.now() / 1000)
       const thread: PiThread = {
         id: randomUUID(),
@@ -229,6 +231,12 @@ export async function dispatch(s: PiServer, peer: RpcPeer, method: string, p: an
       s.store.delete(oldId)
       s.sessions.set(thread.id, live)
       s.store.saveThread(thread)
+      // 记录客户端创建会话时选择的历史契约，供 thread 投影如实回报。
+      if (p.historyMode != null)
+        s.store.setMeta('thread', thread.id, {
+          ...(s.store.getMeta('thread', thread.id) ?? {}),
+          historyMode: p.historyMode,
+        })
       s.subscribe(peer, thread.id)
       if (p.projectId) s.projects.assignThread(thread.id, p.projectId)
       if (p.collaborationMode?.mode === 'plan') {
@@ -255,13 +263,14 @@ export async function dispatch(s: PiServer, peer: RpcPeer, method: string, p: an
           (p.sourceKinds?.length
             ? p.sourceKinds.includes(t.parentThreadId ? 'subAgentThreadSpawn' : 'appServer')
             : p.parentThreadId || p.ancestorThreadId || !t.parentThreadId) &&
-          (!p.cwd || t.cwd === p.cwd) &&
+          (p.cwd == null || (Array.isArray(p.cwd) ? p.cwd.includes(t.cwd) : t.cwd === p.cwd)) &&
+          (p.projectId === undefined || s.projects.projectId(t.id) === p.projectId) &&
           (!p.searchTerm || `${t.name ?? ''} ${t.preview}`.includes(p.searchTerm)),
       )
       return pageRecords(
         rows.map((t) => s.envelope(t, false, byId)),
         p,
-        'threads',
+        `threads:${JSON.stringify([p.projectId !== undefined, p.projectId, p.cwd, p.parentThreadId, p.ancestorThreadId, p.sourceKinds, p.searchTerm])}`,
         (t) => t.id,
       )
     }

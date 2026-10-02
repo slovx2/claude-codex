@@ -163,14 +163,14 @@ export class PiServer {
       })
     })
   }
-  async index(cwd?: string): Promise<void> {
+  async index(cwd?: string | string[]): Promise<void> {
     if (this.indexing) return this.indexing
     this.indexing = (async () => {
       const rows = this.store.threads()
       const byPath = new Map(rows.map((t) => [t.path, t]))
       const byId = new Map(rows.map((t) => [t.id, t]))
       for (const directory of sessionIndexDirectories([
-        cwd ?? process.cwd(),
+        ...(Array.isArray(cwd) ? cwd : [cwd ?? process.cwd()]),
         ...rows.map((t) => t.cwd),
       ]))
         for (const { thread, entries } of await discoverSessions(directory, this.nativeFiles)) {
@@ -266,6 +266,7 @@ export class PiServer {
   }
   envelope(thread: PiThread, includeTurns = true, byId?: Map<string, PiThread>): any {
     const ancestors = thread.parentThreadId ? this.ancestors(thread, byId) : []
+    const metadata = this.store.getMeta('thread', thread.id) ?? {}
     return {
       id: thread.id,
       sessionId: thread.id,
@@ -275,8 +276,19 @@ export class PiServer {
       modelProvider: thread.model?.split('/')[0] ?? 'pi',
       createdAt: thread.createdAt,
       updatedAt: thread.updatedAt,
+      recencyAt: thread.updatedAt,
+      historyMode: metadata.historyMode ?? 'legacy',
+      threadSource: thread.parentThreadId ? 'subagent' : 'user',
+      section: metadata.sectionId
+        ? (this.store.getMeta('section', metadata.sectionId) ?? null)
+        : null,
+      sectionEnteredAt: metadata.sectionEnteredAt ?? null,
+      isPinned: metadata.sectionId === 'pinned' || metadata.isPinned === true,
+      canAcceptDirectInput: true,
+      activePermissionProfile: ':danger-full-access',
       status: this.active.has(thread.id) ? { type: 'active', activeFlags: [] } : { type: 'idle' },
-      path: thread.path,
+      // 原生 Pi JSONL 不是 Codex rollout；只在引擎内部使用，不能交给桌面读取。
+      path: null,
       cwd: thread.cwd,
       cliVersion: '0.99.1',
       source: thread.parentThreadId
@@ -293,7 +305,7 @@ export class PiServer {
       agentRole: null,
       turns: includeTurns ? this.store.turns(thread.id) : [],
       projectId: this.projects.projectId(thread.id),
-      ...this.store.getMeta('thread', thread.id),
+      ...metadata,
     }
   }
   ancestors(

@@ -293,8 +293,11 @@ createInterface({input:process.stdin}).on('line',line=>{
       .find((t: any) => t.id === second.turn.id)
       .items.find((i: any) => i.type === 'fileChange')
     assert.equal(change.changes[0].kind.type, 'add')
-    assert.match(change.changes[0].diff, /--- \/dev\/null/)
-    assert.match(change.changes[0].diff, /\+written by Pi/)
+    assert.equal(change.changes[0].diff, 'written by Pi')
+    const streamedChange = messages.desktop!.find(
+      (m: any) => m.method === 'item/completed' && m.params?.item?.id === change.id,
+    )
+    assert.deepEqual(streamedChange?.params.item.changes, change.changes)
     assert.equal(before.name, '原生 Pi 标题')
     await server.close()
     server = new PiServer(join(root, 'state'))
@@ -305,6 +308,12 @@ createInterface({input:process.stdin}).on('line',line=>{
       before.turns.map((t: any) => t.id),
     )
     const after = (await ok('desktop', 'thread/resume', { threadId })).thread
+    assert.deepEqual(
+      after.turns
+        .find((t: any) => t.id === second.turn.id)
+        .items.find((i: any) => i.id === change.id).changes,
+      change.changes,
+    )
     assert.deepEqual(
       after.turns.map((t: any) => t.id),
       before.turns.map((t: any) => t.id),
@@ -413,7 +422,7 @@ createInterface({input:process.stdin}).on('line',line=>{
     assert.equal(output.params.stream, 'stdout')
     assert.equal(typeof output.params.processId, 'string')
     // 原生 CLI 使用同一个 SessionManager 接续，适配器重新读取原生内容。
-    const native = SessionManager.open(after.path, undefined, cwd)
+    const native = SessionManager.open(server.store.thread(threadId).path!, undefined, cwd)
     native.appendSessionInfo('CLI 改名')
     native.appendMessage({ role: 'user', content: 'CLI added context', timestamp: Date.now() })
     const reloaded = (await ok('desktop', 'thread/resume', { threadId })).thread
@@ -440,7 +449,26 @@ createInterface({input:process.stdin}).on('line',line=>{
     await ok('desktop', 'thread/items/list', { threadId, limit: 2 })
     const cwd2 = join(root, 'project2')
     await mkdir(cwd2)
-    const other = await ok('mobile', 'thread/start', { cwd: cwd2, model: 'gate/gate' })
+    const other = await ok('mobile', 'thread/start', {
+      cwd: cwd2,
+      model: 'gate/gate',
+      historyMode: 'paginated',
+    })
+    // 客户端创建时选择的历史契约须在创建响应与后续列表中如实回报；未指定时为 legacy。
+    assert.equal(other.thread.historyMode, 'paginated')
+    assert.equal(
+      (await ok('mobile', 'thread/list', { cwd: cwd2 })).data.find(
+        (t: any) => t.id === other.thread.id,
+      ).historyMode,
+      'paginated',
+    )
+    assert.equal(
+      (await ok('desktop', 'thread/read', { threadId, includeTurns: false })).thread.historyMode,
+      'legacy',
+    )
+    const invalid = await call('mobile', 'thread/start', { cwd: cwd2, historyMode: 'bogus' })
+    assert.equal(invalid.error?.code, -32602)
+    assert.match(invalid.error?.message ?? '', /historyMode 无效/)
     replies.push({ text: 'different cwd' })
     const otherTurn = await ok('mobile', 'turn/start', {
       threadId: other.thread.id,
@@ -862,8 +890,9 @@ createInterface({input:process.stdin}).on('line',line=>{
     await ok('desktop', 'turn/interrupt', { threadId, turnId: stopping.turn.id })
     childRelease({ text: 'must not continue' })
     assert.equal(server.sessions.has(threadId), false)
+    const deletedPath = server.store.thread(other.thread.id).path!
     await ok('mobile', 'thread/delete', { threadId: other.thread.id })
-    await assert.rejects(readFile(other.thread.path), { code: 'ENOENT' })
+    await assert.rejects(readFile(deletedPath), { code: 'ENOENT' })
     await writeFile(
       join(agentDir, 'extensions', 'mcp-replacement.ts'),
       `export default function(pi) {

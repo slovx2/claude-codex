@@ -7,7 +7,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { SessionManager } from '@earendil-works/pi-coding-agent'
 import { NativeFiles, sessionDirectory } from '../src/native-files.mjs'
-import { finishTool } from '../src/projection.mjs'
+import { finishTool, projectHistory } from '../src/projection.mjs'
 import { dispatch } from '../src/protocol.mjs'
 import { PiServer } from '../src/server.mjs'
 import type { PiThread } from '../src/store.mjs'
@@ -197,6 +197,47 @@ test('edit 使用官方 unified patch，不投影带行号的展示 diff', () =>
   )
   assert.match(item.changes[0].diff, /^--- a/)
   assert.equal(item.changes[0].kind.type, 'update')
+})
+
+test('旧 write 历史的 add 使用正文，十字节无换行不会把 diff 头统计为五行', () => {
+  for (const content of ['1234567890', '', 'one\ntwo\n']) {
+    const entries = [
+      {
+        type: 'message',
+        id: 'a',
+        message: {
+          role: 'assistant',
+          timestamp: 1,
+          content: [
+            { type: 'toolCall', id: 'write', name: 'write', arguments: { path: 'a.txt', content } },
+          ],
+        },
+      },
+      {
+        type: 'custom',
+        customType: 'tyrs-file-change',
+        data: {
+          id: 'write',
+          changes: [
+            {
+              path: 'a.txt',
+              kind: { type: 'add' },
+              diff: '--- /dev/null\n+++ a.txt\n@@ -0,0 +1 @@\n+1234567890\n\\ No newline at end of file\n',
+            },
+          ],
+        },
+      },
+      {
+        type: 'message',
+        id: 'b',
+        message: { role: 'toolResult', timestamp: 2, toolCallId: 'write', content: [] },
+      },
+    ]
+    const before = JSON.stringify(entries)
+    const turns = projectHistory(entries, { id: 't', cwd: '/tmp' } as PiThread)
+    assert.equal(turns[0]!.items[0].changes[0].diff, content)
+    assert.equal(JSON.stringify(entries), before, '修复历史投影不能改写原生 JSONL')
+  }
 })
 
 test('shellCommand 即刻响应，长命令不阻塞 interrupt 且输出符合 schema', {

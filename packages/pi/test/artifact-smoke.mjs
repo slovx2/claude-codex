@@ -1,7 +1,7 @@
 // 从解包后的独立制品运行；不依赖源码、开发依赖或宿主模型凭据。
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -26,11 +26,41 @@ const mock = createServer(async (request, response) => {
   requests++
   response.writeHead(200, { 'content-type': 'text/event-stream' })
   const base = { id: 'artifact', object: 'chat.completion.chunk', created: 1, model: body.model }
+  const writing = requests === 1
   response.write(
-    `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: 'artifact SDK reply' }, finish_reason: null }] })}\n\n`,
+    `data: ${JSON.stringify({
+      ...base,
+      choices: [
+        {
+          index: 0,
+          delta: {
+            role: 'assistant',
+            ...(writing
+              ? {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'artifact-write',
+                      type: 'function',
+                      function: {
+                        name: 'write',
+                        arguments: JSON.stringify({
+                          path: join(cwd, 'agent-file.txt'),
+                          content: '1234567890',
+                        }),
+                      },
+                    },
+                  ],
+                }
+              : { content: 'artifact SDK reply' }),
+          },
+          finish_reason: null,
+        },
+      ],
+    })}\n\n`,
   )
   response.write(
-    `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`,
+    `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: writing ? 'tool_calls' : 'stop' }] })}\n\n`,
   )
   response.end('data: [DONE]\n\n')
 })
@@ -152,7 +182,12 @@ try {
   await call('process/spawn', { processHandle: 'kill', cwd, tty: true, command: ['/bin/sh'] })
   await call('process/kill', { processHandle: 'kill' })
   await wait((m) => m.method === 'process/exited' && m.params.processHandle === 'kill')
-  const { thread } = await call('thread/start', { cwd, model: 'gate/gate' })
+  const { project } = await call('project/create', {
+    name: 'artifact',
+    roots: [{ path: cwd }],
+    idempotencyKey: 'artifact',
+  })
+  const { thread } = await call('thread/start', { cwd, model: 'gate/gate', projectId: project.id })
   const { turn } = await call('turn/start', {
     threadId: thread.id,
     input: [{ type: 'text', text: 'artifact SDK test' }],
@@ -162,8 +197,25 @@ try {
       .status,
     'completed',
   )
-  assert.equal(requests, 1)
-  assert.ok((await readFile(thread.path, 'utf8')).includes('artifact SDK reply'))
+  assert.equal(requests, 2)
+  assert.equal(await readFile(join(cwd, 'agent-file.txt'), 'utf8'), '1234567890')
+  const change = events.find(
+    (m) => m.method === 'item/completed' && m.params.item.type === 'fileChange',
+  ).params.item.changes[0]
+  assert.deepEqual(change.kind, { type: 'add' })
+  assert.equal(change.diff, '1234567890')
+  const listed = await call('thread/list', { projectId: project.id, cwd: [cwd] })
+  assert.equal(listed.data[0].id, thread.id)
+  assert.equal(listed.data[0].threadSource, 'user')
+  assert.equal(listed.data[0].path, null)
+  assert.deepEqual((await call('thread/list', { projectId: null })).data, [])
+  // 原生文件仍存在；从 Pi 自己的会话目录验证，不能把它当作 Codex rollout。
+  const files = await readdir(join(agent, 'sessions'), { recursive: true })
+  const nativePath = files.find((file) => file.endsWith(`_${thread.id}.jsonl`))
+  assert.ok(nativePath)
+  assert.ok(
+    (await readFile(join(agent, 'sessions', nativePath), 'utf8')).includes('artifact SDK reply'),
+  )
   child.stdin.end()
   await closed
   console.log('ARTIFACT PASS: 解包启动、文件读写/监听/搜索、PTY 输入/尺寸/关闭、真实 SDK mock 回合')

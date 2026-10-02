@@ -217,12 +217,11 @@ export function onEvent(server: PiServer, thread: PiThread, event: any): void {
           {
             path,
             kind: call.before === null ? { type: 'add' } : { type: 'update', move_path: null },
-            diff: createTwoFilesPatch(
-              call.before === null ? '/dev/null' : path,
-              path,
-              call.before ?? '',
-              call.args.content,
-            ),
+            // 协议 add 承载文件正文，只有 update 承载 unified diff。
+            diff:
+              call.before === null
+                ? call.args.content
+                : createTwoFilesPatch(path, path, call.before, call.args.content),
           },
         ]
         active.live?.session.sessionManager.appendCustomEntry('tyrs-file-change', {

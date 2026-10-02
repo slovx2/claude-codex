@@ -108,9 +108,59 @@ test('原生父子投影支持顶层、直接父级、所有后代和重启，me
       assert.deepEqual(result.thread.turns, [])
       assert.throws(() => assertResponse('thread/metadata/update', {}))
       assert.equal(server.sessions.size, 0, '列表和 metadata 不创建执行会话')
+      const project = (
+        await call('project/create', {
+          name: 'acceptance',
+          roots: [{ path: root }],
+          idempotencyKey: 'project',
+        })
+      ).project
+      await call('thread/metadata/update', { threadId: ids[0], projectId: project.id })
+      const members = await call('thread/list', { projectId: project.id })
+      assert.deepEqual(
+        members.data.map((t: any) => t.id),
+        [ids[0]],
+      )
+      assert.deepEqual(
+        (await call('thread/list', { projectId: null })).data.map((t: any) => t.id),
+        [ids[3]],
+      )
+      const envelope = members.data[0]
+      assert.deepEqual(
+        (await call('thread/list', { projectId: project.id, cwd: [root] })).data,
+        members.data,
+      )
+      assert.deepEqual((await call('thread/list', { cwd: [] })).data, [])
+      const allPage = await call('thread/list', { limit: 1 })
+      assert.ok(allPage.nextCursor)
+      await assert.rejects(
+        call('thread/list', { projectId: null, cursor: allPage.nextCursor }),
+        /游标/,
+      )
+      assert.equal(envelope.projectId, project.id)
+      assert.equal(envelope.cwd, root)
+      assert.equal(envelope.path, null)
+      assert.equal(envelope.threadSource, 'user')
+      assert.equal(envelope.recencyAt, envelope.updatedAt)
+      assert.equal(envelope.historyMode, 'legacy')
+      assert.equal(envelope.section, null)
+      assert.equal(envelope.isPinned, false)
+      assert.equal(envelope.canAcceptDirectInput, true)
+      assert.equal(envelope.activePermissionProfile, ':danger-full-access')
+      const reread = await call('thread/read', { threadId: ids[0], includeTurns: false })
+      assert.deepEqual(reread.thread, envelope)
       if (pass === 0) {
+        // 模拟 CLI 修改 JSONL 后再刷新目录，适配元数据不可被原生索引覆盖。
+        await writeFile(
+          join(sessions, `${ids[0]}.jsonl`),
+          `${JSON.stringify({ type: 'session', version: 3, id: ids[0], cwd: root, timestamp: '2026-10-02T00:00:00Z' })}\n`,
+        )
         await server.close()
         server = new PiServer(join(root, 'adapter'))
+        assert.equal(
+          (await call('thread/list', { projectId: project.id })).data[0].projectId,
+          project.id,
+        )
       }
     }
   } finally {

@@ -163,7 +163,12 @@ export function projectHistory(entries: any[], thread: PiThread): PiTurn[] {
   for (const entry of entries) {
     if (entry.type === 'custom' && entry.customType === 'tyrs-file-change') {
       const call = calls.get(entry.data.id)
-      if (call) call.item.changes = entry.data.changes
+      if (call)
+        call.item.changes = entry.data.changes.map((change: any) =>
+          change.kind.type === 'add' && typeof call.args.content === 'string'
+            ? { ...change, diff: call.args.content }
+            : change,
+        )
     }
     if (entry.type === 'custom' && entry.customType === 'subagents:record') {
       for (const previous of turns)
