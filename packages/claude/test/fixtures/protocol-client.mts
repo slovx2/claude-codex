@@ -2,6 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
 import { mkdir, readdir, readFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
+import { fileURLToPath } from 'node:url'
 import { saveArtifact } from './artifacts.mjs'
 import { validatePayload } from './schema-contract.mjs'
 
@@ -59,7 +60,7 @@ export class ProtocolClient {
     }
     this.process = spawn(
       process.execPath,
-      [resolve('packages/claude/dist/claude/src/adapter.mjs'), 'app-server'],
+      [fileURLToPath(new URL('../../src/adapter.mjs', import.meta.url)), 'app-server'],
       { env },
     )
     this.transportClosed = new Promise((resolve) => {

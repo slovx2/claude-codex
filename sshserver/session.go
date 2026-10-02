@@ -30,10 +30,10 @@ func (s *SSHServer) serveSFTP(channel ssh.Channel) {
 	s.writeExit(channel, 0)
 }
 
-func (s *SSHServer) runCommand(channel ssh.Channel, state *sshSessionState, command string) {
+func (s *SSHServer) runCommand(ctx context.Context, channel ssh.Channel, state *sshSessionState, command string) {
 	trimmed := strings.TrimSpace(command)
 	if s.options.Command != nil {
-		if handled, status := s.options.Command(context.Background(), trimmed, channel); handled {
+		if handled, status := s.options.Command(ctx, trimmed, channel); handled {
 			s.writeExit(channel, status)
 			return
 		}
@@ -61,12 +61,12 @@ func (s *SSHServer) runCommand(channel ssh.Channel, state *sshSessionState, comm
 		return
 	}
 
-	s.runProcess(channel, state, command, channel)
+	s.runProcess(ctx, channel, state, command, channel)
 }
 
-func (s *SSHServer) runShell(channel ssh.Channel, state *sshSessionState) {
+func (s *SSHServer) runShell(ctx context.Context, channel ssh.Channel, state *sshSessionState) {
 	if state.term != "" {
-		s.runProcess(channel, state, "", channel)
+		s.runProcess(ctx, channel, state, "", channel)
 		return
 	}
 	reader := bufio.NewReaderSize(channel, 64*1024)
@@ -96,10 +96,10 @@ func (s *SSHServer) runShell(channel ssh.Channel, state *sshSessionState) {
 		s.writeExit(channel, 0)
 		return
 	}
-	s.runProcess(channel, state, "", io.MultiReader(strings.NewReader(line), reader))
+	s.runProcess(ctx, channel, state, "", io.MultiReader(strings.NewReader(line), reader))
 }
 
-func (s *SSHServer) runProcess(channel ssh.Channel, state *sshSessionState, command string, input io.Reader) {
+func (s *SSHServer) runProcess(ctx context.Context, channel ssh.Channel, state *sshSessionState, command string, input io.Reader) {
 	arguments := []string(nil)
 	if strings.TrimSpace(command) != "" {
 		if s.options.EntryBin != "" {
@@ -107,7 +107,7 @@ func (s *SSHServer) runProcess(channel ssh.Channel, state *sshSessionState, comm
 		}
 		arguments = []string{"-lc", command}
 	}
-	process := exec.CommandContext(s.context, s.options.Shell, arguments...)
+	process := exec.CommandContext(ctx, s.options.Shell, arguments...)
 	if state.term == "" {
 		process.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}

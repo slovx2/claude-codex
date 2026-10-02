@@ -340,7 +340,7 @@ export async function runTurn(server: PiServer, active: ActiveTurn, params: any)
     thread.path = session.sessionFile ?? null
     thread.effort = session.thinkingLevel
   } catch (error) {
-    if (process.env.PI_ADAPTER_DEBUG === '1' && error instanceof Error)
+    if (process.env.CHA_PI_DEBUG === '1' && error instanceof Error)
       process.stderr.write(`${error.stack}\n`)
     if (!active.stopped)
       turn.error = {

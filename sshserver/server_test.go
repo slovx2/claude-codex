@@ -20,6 +20,32 @@ import (
 
 type desktopStub struct{}
 
+func TestCloseReleasesIncompleteHandshake(t *testing.T) {
+	server, err := StartSSHServer(context.Background(), SSHOptions{
+		ListenAddr: "127.0.0.1:0", HostKeyFile: filepath.Join(t.TempDir(), "host_key"),
+		Home: t.TempDir(), CodexHome: t.TempDir(), Runtime: desktopStub{},
+	})
+	require.NoError(t, err)
+	client, err := net.Dial("tcp", server.Addr().String())
+	require.NoError(t, err)
+	defer client.Close()
+	// 收到服务端版本头，确认连接已进入 SSH 握手；客户端不发送任何字节。
+	require.NoError(t, client.SetReadDeadline(time.Now().Add(time.Second)))
+	buffer := make([]byte, 128)
+	_, err = client.Read(buffer)
+	require.NoError(t, err)
+	done := make(chan error, 1)
+	go func() { done <- server.Close() }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		_ = client.Close()
+		<-done
+		t.Fatal("未完成的 SSH 握手阻止了退出")
+	}
+}
+
 func (desktopStub) ServeDesktop(connection net.Conn) error {
 	_, err := connection.Write([]byte("desktop-proxy"))
 	return err

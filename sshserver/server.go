@@ -48,10 +48,11 @@ type SSHServer struct {
 	config             *ssh.ServerConfig
 	hostKeyFingerprint string
 
-	mu          sync.Mutex
-	connections map[*ssh.ServerConn]struct{}
-	closed      bool
-	wg          sync.WaitGroup
+	mu             sync.Mutex
+	connections    map[*ssh.ServerConn]struct{}
+	rawConnections map[net.Conn]struct{}
+	closed         bool
+	wg             sync.WaitGroup
 }
 
 func StartSSHServer(ctx context.Context, options SSHOptions) (*SSHServer, error) {
@@ -93,7 +94,7 @@ func StartSSHServer(ctx context.Context, options SSHOptions) (*SSHServer, error)
 	ctx, cancel := context.WithCancel(ctx)
 	server := &SSHServer{context: ctx, cancel: cancel, options: options, listener: listener, config: configuration,
 		hostKeyFingerprint: ssh.FingerprintSHA256(signer.PublicKey()),
-		connections:        make(map[*ssh.ServerConn]struct{})}
+		connections:        make(map[*ssh.ServerConn]struct{}), rawConnections: make(map[net.Conn]struct{})}
 	options.Authorization.mu.Lock()
 	options.Authorization.servers[server] = struct{}{}
 	options.Authorization.mu.Unlock()
@@ -119,6 +120,9 @@ func (s *SSHServer) Close() error {
 	}
 	s.closed = true
 	_ = s.listener.Close()
+	for connection := range s.rawConnections {
+		_ = connection.Close()
+	}
 	for connection := range s.connections {
 		_ = connection.Close()
 	}
@@ -145,7 +149,22 @@ func (s *SSHServer) serve(ctx context.Context) {
 
 func (s *SSHServer) handleConnection(raw net.Conn) {
 	defer s.wg.Done()
-	ctx, cancel := context.WithCancel(context.Background())
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = raw.Close()
+		return
+	}
+	// 握手尚未完成的 TCP 连接也必须在关闭服务时释放。
+	s.rawConnections[raw] = struct{}{}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.rawConnections, raw)
+		s.mu.Unlock()
+		_ = raw.Close()
+	}()
+	ctx, cancel := context.WithCancel(s.context)
 	defer cancel()
 	connection, channels, requests, err := ssh.NewServerConn(raw, s.config)
 	if err != nil {
@@ -190,7 +209,7 @@ func (s *SSHServer) handleConnection(raw net.Conn) {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			s.handleSession(channel, channelRequests)
+			s.handleSession(ctx, channel, channelRequests)
 		}()
 	}
 }
@@ -204,7 +223,7 @@ type sshSessionState struct {
 	process     *os.File
 }
 
-func (s *SSHServer) handleSession(channel ssh.Channel, requests <-chan *ssh.Request) {
+func (s *SSHServer) handleSession(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request) {
 	defer func() { _ = channel.Close() }()
 	state := &sshSessionState{environment: make(map[string]string), columns: 80, rows: 24}
 	for request := range requests {
@@ -254,7 +273,7 @@ func (s *SSHServer) handleSession(channel ssh.Channel, requests <-chan *ssh.Requ
 			}
 			state.started = true
 			_ = request.Reply(true, nil)
-			s.runCommand(channel, state, input.Command)
+			s.runCommand(ctx, channel, state, input.Command)
 			return
 		case "shell":
 			if state.started {
@@ -263,7 +282,7 @@ func (s *SSHServer) handleSession(channel ssh.Channel, requests <-chan *ssh.Requ
 			}
 			state.started = true
 			_ = request.Reply(true, nil)
-			s.runShell(channel, state)
+			s.runShell(ctx, channel, state)
 			return
 		default:
 			_ = request.Reply(false, nil)
