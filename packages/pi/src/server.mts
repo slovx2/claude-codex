@@ -6,6 +6,7 @@ import { ProcessRpc } from '../../shared/src/process-rpc.mjs'
 import { ProjectStore } from '../../shared/src/project-store.mjs'
 import { ProtocolError } from '../../shared/src/protocol-contract.mjs'
 import { QueueStore } from '../../shared/src/queue-store.mjs'
+import { PINNED_SECTION, PINNED_SECTION_ID } from '../../shared/src/thread-sections.mjs'
 import type { RpcPeer, WireMessage } from '../../shared/src/types.mjs'
 import { NativeFiles, nativeBranch, sessionIndexDirectories } from './native-files.mjs'
 import { discoverSessions, projectHistory } from './projection.mjs'
@@ -279,11 +280,14 @@ export class PiServer {
       recencyAt: thread.updatedAt,
       historyMode: metadata.historyMode ?? 'legacy',
       threadSource: thread.parentThreadId ? 'subagent' : 'user',
-      section: metadata.sectionId
-        ? (this.store.getMeta('section', metadata.sectionId) ?? null)
-        : null,
+      section:
+        metadata.sectionId === PINNED_SECTION_ID
+          ? PINNED_SECTION
+          : metadata.sectionId
+            ? (this.store.getMeta('section', metadata.sectionId) ?? null)
+            : null,
       sectionEnteredAt: metadata.sectionEnteredAt ?? null,
-      isPinned: metadata.sectionId === 'pinned' || metadata.isPinned === true,
+      isPinned: metadata.sectionId === PINNED_SECTION_ID,
       canAcceptDirectInput: true,
       activePermissionProfile: ':danger-full-access',
       status: this.active.has(thread.id) ? { type: 'active', activeFlags: [] } : { type: 'idle' },

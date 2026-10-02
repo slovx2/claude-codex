@@ -135,6 +135,9 @@ export async function startWebSocketTransport(
 
   return {
     async close() {
+      // server.close 会等全部现有连接结束；Worker Hub 的上游连接常驻，
+      // 不主动断开客户端时退出会永久挂起，旧运行时收到 SIGTERM 后无法退出。
+      for (const client of wss.clients) client.terminate()
       await new Promise<void>((resolve) => {
         wss.close(() => {
           server.close(() => resolve())

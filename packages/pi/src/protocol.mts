@@ -12,6 +12,7 @@ import { gitDiffToRemote } from '../../shared/src/git-diff-remote.mjs'
 import { projectRequest } from '../../shared/src/project-rpc.mjs'
 import { ProtocolError, pageRecords, requiredString } from '../../shared/src/protocol-contract.mjs'
 import { codexUserAgent, platformFamily, platformOs } from '../../shared/src/runtime-version.mjs'
+import { PINNED_SECTION_ID } from '../../shared/src/thread-sections.mjs'
 import type { RpcPeer } from '../../shared/src/types.mjs'
 import { clientTools } from './dynamic-tools.mjs'
 import { metadataRequest } from './metadata.mjs'
@@ -265,12 +266,17 @@ export async function dispatch(s: PiServer, peer: RpcPeer, method: string, p: an
             : p.parentThreadId || p.ancestorThreadId || !t.parentThreadId) &&
           (p.cwd == null || (Array.isArray(p.cwd) ? p.cwd.includes(t.cwd) : t.cwd === p.cwd)) &&
           (p.projectId === undefined || s.projects.projectId(t.id) === p.projectId) &&
+          // sectionId 省略为全部、null 为未分组、字符串为指定分组；桌面据此区分置顶与普通会话。
+          (p.sectionId === undefined ||
+            (s.store.getMeta('thread', t.id)?.sectionId ?? null) === p.sectionId) &&
+          (typeof p.isPinned !== 'boolean' ||
+            (s.store.getMeta('thread', t.id)?.sectionId === PINNED_SECTION_ID) === p.isPinned) &&
           (!p.searchTerm || `${t.name ?? ''} ${t.preview}`.includes(p.searchTerm)),
       )
       return pageRecords(
         rows.map((t) => s.envelope(t, false, byId)),
         p,
-        `threads:${JSON.stringify([p.projectId !== undefined, p.projectId, p.cwd, p.parentThreadId, p.ancestorThreadId, p.sourceKinds, p.searchTerm])}`,
+        `threads:${JSON.stringify([p.projectId !== undefined, p.projectId, p.sectionId !== undefined, p.sectionId, p.isPinned, p.cwd, p.parentThreadId, p.ancestorThreadId, p.sourceKinds, p.searchTerm])}`,
         (t) => t.id,
       )
     }

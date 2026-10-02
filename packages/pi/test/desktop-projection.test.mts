@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { PINNED_SECTION, PINNED_SECTION_ID } from '../../shared/src/thread-sections.mjs'
 import { dispatch } from '../src/protocol.mjs'
 import { PiServer } from '../src/server.mjs'
 import { createUi } from '../src/ui.mjs'
@@ -163,6 +164,61 @@ test('原生父子投影支持顶层、直接父级、所有后代和重启，me
         )
       }
     }
+  } finally {
+    await server.close()
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR
+    else process.env.PI_CODING_AGENT_DIR = previous
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('置顶分组使用桌面固定 ID，thread/list 按 sectionId 与 isPinned 筛选', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-desktop-sections-'))
+  const previous = process.env.PI_CODING_AGENT_DIR
+  process.env.PI_CODING_AGENT_DIR = join(root, 'agent')
+  const sessions = join(root, 'agent', 'sessions')
+  await mkdir(sessions, { recursive: true })
+  const ids = ['00000000-0000-4000-8000-0000000000a1', '00000000-0000-4000-8000-0000000000a2']
+  for (const id of ids)
+    await writeFile(
+      join(sessions, `${id}.jsonl`),
+      `${JSON.stringify({ type: 'session', version: 3, id, cwd: root, timestamp: '2026-10-02T00:00:00Z' })}\n`,
+    )
+  const server = new PiServer(join(root, 'adapter'))
+  const peer = { id: 'p', send() {}, close() {} }
+  const call = async (method: string, params: any = {}) => {
+    const result = await dispatch(server, peer, method, params)
+    assertResponse(method, result)
+    return result
+  }
+  const listIds = async (params: any) =>
+    (await call('thread/list', params)).data.map((t: any) => t.id).sort()
+  try {
+    // 桌面查询置顶分组时，未置顶的会话不得出现（此前忽略 sectionId，全部被当成置顶）。
+    assert.deepEqual(await listIds({ sectionId: PINNED_SECTION_ID }), [])
+    assert.deepEqual(await listIds({ sectionId: null }), [...ids].sort())
+    await call('thread/metadata/update', { threadId: ids[0], isPinned: true })
+    assert.deepEqual(await listIds({ sectionId: PINNED_SECTION_ID }), [ids[0]])
+    assert.deepEqual(await listIds({ sectionId: null }), [ids[1]])
+    assert.deepEqual(await listIds({ isPinned: true }), [ids[0]])
+    assert.deepEqual(await listIds({ isPinned: false }), [ids[1]])
+    assert.deepEqual(await listIds({}), [...ids].sort())
+    const pinned = (await call('thread/read', { threadId: ids[0], includeTurns: false })).thread
+    assert.equal(pinned.isPinned, true)
+    assert.deepEqual(pinned.section, PINNED_SECTION)
+    const sections = await call('threadSection/list', {})
+    assert.equal(sections.data[0].id, PINNED_SECTION_ID)
+    await call('thread/section/move', { threadId: ids[1], sectionId: PINNED_SECTION_ID })
+    await call('thread/section/move', { threadId: ids[0], sectionId: null })
+    assert.deepEqual(await listIds({ sectionId: PINNED_SECTION_ID }), [ids[1]])
+    assert.equal(
+      (await call('thread/read', { threadId: ids[0], includeTurns: false })).thread.isPinned,
+      false,
+    )
+    await assert.rejects(
+      dispatch(server, peer, 'threadSection/delete', { sectionId: PINNED_SECTION_ID }),
+      /内置置顶分组/,
+    )
   } finally {
     await server.close()
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR

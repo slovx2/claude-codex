@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { ProtocolError, pageRecords, requiredString } from '../../shared/src/protocol-contract.mjs'
+import { PINNED_SECTION, PINNED_SECTION_ID } from '../../shared/src/thread-sections.mjs'
 import type { RpcPeer } from '../../shared/src/types.mjs'
 import type { PiServer } from './server.mjs'
 
@@ -107,14 +108,18 @@ export function metadataRequest(s: PiServer, peer: RpcPeer, method: string, p: a
     if (method === 'thread/section/move') {
       if (p.sectionId !== null && typeof p.sectionId !== 'string')
         throw new ProtocolError(-32602, 'sectionId 必须为字符串或 null')
-      if (p.sectionId && p.sectionId !== 'pinned' && !s.store.getMeta('section', p.sectionId))
+      if (
+        p.sectionId &&
+        p.sectionId !== PINNED_SECTION_ID &&
+        !s.store.getMeta('section', p.sectionId)
+      )
         throw new ProtocolError(-32602, '未知分组')
       data.sectionId = p.sectionId
-      data.isPinned = p.sectionId === 'pinned'
+      data.isPinned = p.sectionId === PINNED_SECTION_ID
       data.sectionEnteredAt = Math.floor(Date.now() / 1000)
     } else if (typeof p.isPinned === 'boolean') {
       data.isPinned = p.isPinned
-      data.sectionId = p.isPinned ? 'pinned' : null
+      data.sectionId = p.isPinned ? PINNED_SECTION_ID : null
     }
     s.store.setMeta('thread', p.threadId, data)
     if (method === 'thread/metadata/update') {
@@ -132,7 +137,9 @@ export function metadataRequest(s: PiServer, peer: RpcPeer, method: string, p: a
       .prepare("SELECT data FROM metadata WHERE scope='section' ORDER BY id")
       .all()
       .map((r) => JSON.parse(String(r.data)))
-    if (method === 'threadSection/list') return pageRecords(rows, p, 'sections', (r) => r.id)
+    // 内置置顶分组始终存在，与桌面使用的固定 ID 一致。
+    if (method === 'threadSection/list')
+      return pageRecords([PINNED_SECTION, ...rows], p, 'sections', (r) => r.id)
     if (method === 'threadSection/create') {
       const section = {
         id: randomUUID(),
@@ -142,6 +149,8 @@ export function metadataRequest(s: PiServer, peer: RpcPeer, method: string, p: a
       s.store.setMeta('section', section.id, section)
       return { section }
     }
+    if (p.sectionId === PINNED_SECTION_ID)
+      throw new ProtocolError(-32602, '内置置顶分组不可修改或删除')
     const section = s.store.getMeta('section', p.sectionId)
     if (!section) throw new ProtocolError(-32602, '未知分组')
     if (method === 'threadSection/update') {
