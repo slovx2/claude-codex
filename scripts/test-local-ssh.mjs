@@ -41,6 +41,12 @@ async function runHarness(harness, port) {
     ...(windows
       ? {
           SystemRoot: process.env.SystemRoot,
+          SystemDrive: process.env.SystemDrive,
+          ProgramData: process.env.ProgramData,
+          USERNAME: process.env.USERNAME,
+          USERDOMAIN: process.env.USERDOMAIN,
+          LOCALAPPDATA: join(home, 'AppData', 'Local'),
+          APPDATA: join(home, 'AppData', 'Roaming'),
           WINDIR: process.env.WINDIR,
           ComSpec: process.env.ComSpec,
           PATHEXT: process.env.PATHEXT,
@@ -144,6 +150,7 @@ async function runHarness(harness, port) {
   const version = spawnSync(sshCommand, ['-v', ...sshArgs, 'codex --version'], {
     env,
     encoding: 'utf8',
+    timeout: 15000,
   })
   assert.equal(
     version.status,
@@ -180,7 +187,20 @@ async function runHarness(harness, port) {
   const rpc = (method, params) =>
     new Promise((resolve, reject) => {
       const id = ++sequence
-      pending.set(id, { resolve, reject })
+      const timer = setTimeout(() => {
+        pending.delete(id)
+        reject(new Error(`${method} 超时: ${errors}`))
+      }, 30000)
+      pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer)
+          resolve(value)
+        },
+        reject: (error) => {
+          clearTimeout(timer)
+          reject(error)
+        },
+      })
       ws.send(JSON.stringify({ id, method, params }))
     })
   try {
@@ -188,6 +208,26 @@ async function runHarness(harness, port) {
       clientInfo: { name: 'ssh-test', version: '0.2.0' },
       capabilities: { experimentalApi: true },
     })
+    const command = await rpc('command/exec', {
+      cwd: home,
+      command: [
+        process.execPath,
+        '-e',
+        'require("node:fs").writeFileSync("ssh-command.txt", "COMMAND_OK"); console.log("COMMAND_OK")',
+      ],
+      sandboxPolicy: { type: 'dangerFullAccess' },
+    })
+    assert.equal(command.exitCode, 0, JSON.stringify(command))
+    assert.equal(await readFile(join(home, 'ssh-command.txt'), 'utf8'), 'COMMAND_OK')
+    const terminal = await rpc('command/exec', {
+      processId: 'ssh-pty',
+      cwd: home,
+      command: [process.execPath, '-e', 'console.log(process.stdout.isTTY ? "PTY_OK" : "NO_PTY")'],
+      tty: true,
+      sandboxPolicy: { type: 'dangerFullAccess' },
+    })
+    assert.equal(terminal.exitCode, 0, JSON.stringify(terminal))
+    assert.match(terminal.stdout, /PTY_OK/)
     const { thread } = await rpc('thread/start', {
       cwd: home,
       model: harness === 'pi' ? 'local/ssh-test' : 'claude-sonnet-4-6',

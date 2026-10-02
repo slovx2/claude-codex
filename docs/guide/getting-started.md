@@ -3,6 +3,7 @@
 完整安装命令、依赖版本及两个 harness 的连接步骤统一维护在[项目 README](https://github.com/slovx2/codex-harness-adapter#从源码构建)。
 
 源码构建后使用 `bin/codex-harness-adapter` 的 `init`、`ssh-config`、`serve` 和 `doctor` 子命令。
+Windows 原生环境使用 `bin/codex-harness-adapter.exe`，需要 Git for Windows，终端采用 ConPTY。
 
 Claude 默认使用 `127.0.0.1:7331`，Pi 默认使用 `127.0.0.1:7332`。初始化专用身份后，将输出的 SSH 配置手动加入用户配置，并保持前台服务运行。
 

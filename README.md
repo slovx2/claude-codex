@@ -134,7 +134,7 @@ npm run check
 npm test
 ```
 
-Tyrs Hand 依赖本项目提供的适配器和 SSH 库；Control、Worker 注册、Hub、多端同步、业务授权、Discord 和部署功能继续留在 Tyrs Hand。本项目不需要安装或运行 Tyrs Hand。
+本项目提供可独立消费的适配器和 SSH 库。Control、Worker 注册、Hub、多端同步、业务授权、Discord 和部署功能留在 Tyrs Hand；本项目不需要安装或运行 Tyrs Hand。Tyrs Hand 的依赖切换单独推进。
 
 ## 来源与许可
 

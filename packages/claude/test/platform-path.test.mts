@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { nativeWirePaths } from '../../shared/src/native-path.mjs'
+import { sandboxCommand } from '../src/command-sandbox.mjs'
 
 test('Windows SFTP 路径转换仅处理路径字段，保留提示文本与 Unix 路径', () => {
   const message = {
@@ -17,4 +18,22 @@ test('Windows SFTP 路径转换仅处理路径字段，保留提示文本与 Uni
   assert.equal(result.params.input[0]?.text, '/C:/do not edit prompt')
   assert.deepEqual(result.params.sandboxPolicy.writableRoots, ['E:/extra'])
   assert.deepEqual(nativeWirePaths(message, 'linux'), message)
+})
+
+test('Windows 受限命令明确失败，仅显式完全访问允许执行', {
+  skip: process.platform !== 'win32',
+}, () => {
+  const command = [process.execPath, '-e', 'process.exit(0)']
+  for (const type of ['readOnly', 'workspaceWrite']) {
+    assert.throws(
+      () => sandboxCommand(command, process.cwd(), { sandboxPolicy: { type } }),
+      /Windows 原生宿主没有操作系统沙箱/,
+    )
+  }
+  assert.deepEqual(
+    sandboxCommand(command, process.cwd(), {
+      sandboxPolicy: { type: 'dangerFullAccess' },
+    }),
+    command,
+  )
 })
