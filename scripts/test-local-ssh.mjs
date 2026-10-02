@@ -13,6 +13,7 @@ import { MockLLM } from '../packages/claude/dist/claude/test/fixtures/mock-llm.m
 const windows = process.platform === 'win32'
 const root = await mkdtemp(join(windows ? tmpdir() : '/tmp', 'cha-ssh-'))
 const cli = resolve(`bin/codex-harness-adapter${windows ? '.exe' : ''}`)
+const sshCommand = windows ? join(process.env.SystemRoot, 'System32', 'OpenSSH', 'ssh.exe') : 'ssh'
 const active = []
 const models = []
 let calls = 0
@@ -140,10 +141,23 @@ async function runHarness(harness, port) {
   })
   const alias = `codex-harness-adapter-${harness === 'pi' ? 'pi' : 'claude'}`
   const sshArgs = ['-F', config, '-o', 'BatchMode=yes', alias]
-  const version = spawnSync('ssh', [...sshArgs, 'codex --version'], { env, encoding: 'utf8' })
-  assert.equal(version.status, 0, version.stderr)
+  const version = spawnSync(sshCommand, ['-v', ...sshArgs, 'codex --version'], {
+    env,
+    encoding: 'utf8',
+  })
+  assert.equal(
+    version.status,
+    0,
+    JSON.stringify({
+      stderr: version.stderr,
+      stdout: version.stdout,
+      error: String(version.error ?? ''),
+      signal: version.signal,
+      serviceErrors: errors,
+    }),
+  )
   assert.match(version.stdout, /codex-cli 0\.157\.1/)
-  const ssh = spawn('ssh', [...sshArgs, 'codex app-server proxy'], { env })
+  const ssh = spawn(sshCommand, [...sshArgs, 'codex app-server proxy'], { env })
   active.push(ssh)
   ssh.stderr.on('data', (chunk) => {
     errors += chunk

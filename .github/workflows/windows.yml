@@ -25,5 +25,5 @@ jobs:
           "CLAUDE_CODE_GIT_BASH_PATH=C:\Program Files\Git\bin\bash.exe" >> $env:GITHUB_ENV
       - run: npm run typecheck
       - run: npm run build
-      - run: go test ./...
+      - run: go test -v -timeout=2m ./...
       - run: npm run test:local-ssh

@@ -10,16 +10,19 @@ import (
 )
 
 func (s *SSHServer) runPTY(channel ssh.Channel, state *sshSessionState, process *exec.Cmd) {
+	state.mu.Lock()
 	terminal, err := pty.StartWithSize(process, &pty.Winsize{
 		Cols: uint16(state.columns), Rows: uint16(state.rows),
 	})
 	if err != nil {
+		state.mu.Unlock()
 		s.writeExit(channel, 1)
 		return
 	}
 	state.resize = func(cols, rows uint32) error {
 		return pty.Setsize(terminal, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 	}
+	state.mu.Unlock()
 	done := make(chan struct{}, 2)
 	go func() {
 		_, _ = io.Copy(terminal, channel)
@@ -30,7 +33,10 @@ func (s *SSHServer) runPTY(channel ssh.Channel, state *sshSessionState, process 
 		done <- struct{}{}
 	}()
 	err = process.Wait()
+	state.mu.Lock()
+	state.resize = nil
 	_ = terminal.Close()
+	state.mu.Unlock()
 	<-done
 	s.writeExit(channel, exitStatus(err))
 }

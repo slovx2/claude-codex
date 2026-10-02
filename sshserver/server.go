@@ -214,6 +214,7 @@ func (s *SSHServer) handleConnection(raw net.Conn) {
 }
 
 type sshSessionState struct {
+	mu          sync.Mutex
 	environment map[string]string
 	term        string
 	columns     uint32
@@ -223,9 +224,28 @@ type sshSessionState struct {
 }
 
 func (s *SSHServer) handleSession(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	defer func() { _ = channel.Close() }()
 	state := &sshSessionState{environment: make(map[string]string), columns: 80, rows: 24}
-	for request := range requests {
+	done := make(chan struct{})
+	start := func(run func()) {
+		s.wg.Add(1)
+		go func() { defer s.wg.Done(); defer close(done); run() }()
+	}
+	for {
+		var request *ssh.Request
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case next, ok := <-requests:
+			if !ok {
+				return
+			}
+			request = next
+		}
 		switch request.Type {
 		case "env":
 			var input struct{ Name, Value string }
@@ -250,18 +270,24 @@ func (s *SSHServer) handleSession(ctx context.Context, channel ssh.Channel, requ
 		case "window-change":
 			var input struct{ Columns, Rows, Width, Height uint32 }
 			if ssh.Unmarshal(request.Payload, &input) == nil {
+				state.mu.Lock()
 				state.columns, state.rows = input.Columns, input.Rows
+				var resizeErr error
 				if state.resize != nil {
-					_ = state.resize(input.Columns, input.Rows)
+					resizeErr = state.resize(input.Columns, input.Rows)
 				}
+				state.mu.Unlock()
+				_ = request.Reply(resizeErr == nil, nil)
+			} else {
+				_ = request.Reply(false, nil)
 			}
 		case "subsystem":
 			var input struct{ Name string }
 			if ssh.Unmarshal(request.Payload, &input) == nil && input.Name == "sftp" && !state.started {
 				state.started = true
 				_ = request.Reply(true, nil)
-				s.serveSFTP(channel)
-				return
+				start(func() { s.serveSFTP(channel) })
+				continue
 			}
 			_ = request.Reply(false, nil)
 		case "exec":
@@ -272,8 +298,7 @@ func (s *SSHServer) handleSession(ctx context.Context, channel ssh.Channel, requ
 			}
 			state.started = true
 			_ = request.Reply(true, nil)
-			s.runCommand(ctx, channel, state, input.Command)
-			return
+			start(func() { s.runCommand(ctx, channel, state, input.Command) })
 		case "shell":
 			if state.started {
 				_ = request.Reply(false, nil)
@@ -281,8 +306,7 @@ func (s *SSHServer) handleSession(ctx context.Context, channel ssh.Channel, requ
 			}
 			state.started = true
 			_ = request.Reply(true, nil)
-			s.runShell(ctx, channel, state)
-			return
+			start(func() { s.runShell(ctx, channel, state) })
 		default:
 			_ = request.Reply(false, nil)
 		}
