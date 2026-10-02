@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { accessSync, constants, realpathSync } from 'node:fs'
 import { delimiter, isAbsolute, join, resolve } from 'node:path'
+import { isVersionAtLeast } from '../packages/shared/src/min-version.mjs'
 
 // 解析真实文件，保留 npm CLI 的 .js 后缀，让 SDK 使用其官方 Node 启动方式。
 export function hostClaudeExecutable(env: NodeJS.ProcessEnv = process.env): string {
@@ -23,14 +24,14 @@ export function hostClaudeExecutable(env: NodeJS.ProcessEnv = process.env): stri
   )
 }
 
-export function hostClaudeVersion(cli: string, expected: string): string {
+export function hostClaudeVersion(cli: string, minimum: string): string {
   let actual: string
   try {
     actual = execFileSync(cli, ['--version'], { encoding: 'utf8', timeout: 10_000 }).trim()
   } catch {
     throw new Error(`无法读取宿主 Claude CLI 版本: ${cli}`)
   }
-  if (actual !== `${expected} (Claude Code)`)
-    throw new Error(`宿主 Claude CLI 版本不符: 需要 ${expected} (Claude Code)，实际 ${actual}`)
+  if (!isVersionAtLeast(/^(\S+) \(Claude Code\)$/.exec(actual)?.[1], minimum))
+    throw new Error(`宿主 Claude CLI 版本不符: 需要 >= ${minimum} (Claude Code)，实际 ${actual}`)
   return actual
 }

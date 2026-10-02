@@ -30,7 +30,7 @@ TYRS_HAND_WORKER_PI_SSH_LISTEN_ADDR=:3334
 
 Pi 默认关闭，可独立于 Claude 启用。三个引擎共用 Worker 身份、客户端授权和并发配额，分别使用进程、Hub、socket、适配元数据目录和 SSH HostKey。
 
-`TYRS_HAND_WORKER_PI_BIN` 指向解包制品中的 `pi-runtime/bin/pi-codex`（可通过软链接提供上述路径）。宿主应已有 Pi CLI 0.99.1；`PI_CLI` 可指定其可执行文件。适配器不会安装或升级用户 CLI。`--runtime-info` 会校验 CLI 与 Node 版本。
+`TYRS_HAND_WORKER_PI_BIN` 指向解包制品中的 `pi-runtime/bin/pi-codex`（可通过软链接提供上述路径）。宿主应已有 Pi CLI >= 0.99.1；`PI_CLI` 可指定其可执行文件。适配器不会安装或升级用户 CLI。`--runtime-info` 会校验 CLI 与 Node 不低于锁定版本。
 
 Pi 配置沿用原生 agentDir，支持 `PI_CODING_AGENT_DIR`，保留 provider 和代理环境变量；Worker 内部凭据不传入引擎。`PI_ADAPTER_HOME` 只存放适配数据库，不放模型凭据和原生 JSONL。
 

@@ -2,6 +2,7 @@
 import { spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { isVersionAtLeast } from '../../shared/src/min-version.mjs'
 import { ProcessRpc } from '../../shared/src/process-rpc.mjs'
 import { codexCliVersion } from '../../shared/src/runtime-version.mjs'
 import {
@@ -27,9 +28,10 @@ async function main(): Promise<void> {
       encoding: 'utf8',
       timeout: 10000,
     })
-    if (cli.error || cli.status !== 0 || cli.stdout.trim() !== versions.cli)
-      throw new Error(`需要用户安装的 Pi CLI ${versions.cli}；可用 PI_CLI 指定路径`)
-    if (process.versions.node !== versions.node) throw new Error(`需要 Node ${versions.node}`)
+    if (cli.error || cli.status !== 0 || !isVersionAtLeast(cli.stdout.trim(), versions.cli))
+      throw new Error(`需要用户安装的 Pi CLI >= ${versions.cli}；可用 PI_CLI 指定路径`)
+    if (!isVersionAtLeast(process.versions.node, versions.node))
+      throw new Error(`需要 Node >= ${versions.node}`)
     process.stdout.write(`${JSON.stringify({ ...runtimeInfo(), cliBuild: cli.stdout.trim() })}\n`)
     return
   }

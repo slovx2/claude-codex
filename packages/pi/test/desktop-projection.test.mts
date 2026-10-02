@@ -36,7 +36,7 @@ test('Pi 原生菜单保持标签，问答必须阻塞且不复制选项描述',
   assert.ok(requests.every((r) => r.isBlocking === true))
 })
 
-test('Pi runtime/info 使用实际版本并通过扩展 schema，拒绝版本漂移', async () => {
+test('Pi runtime/info 使用实际版本并通过扩展 schema，版本只校验格式', async () => {
   const info = await dispatch(
     {} as PiServer,
     { id: 'p', send() {}, close() {} },
@@ -44,12 +44,19 @@ test('Pi runtime/info 使用实际版本并通过扩展 schema，拒绝版本漂
     {},
   )
   assertResponse('runtime/info', info)
+  // 下限由 Worker 比较；schema 接受更高稳定版，拒绝缺失与非法格式。
   for (const change of [
-    { sdkVersion: '0.3.282' },
+    { sdkVersion: '0.99.2' },
     { cliBuild: '0.99.2' },
     { nodeVersion: '24.19.0' },
-    { pluginVersions: {} },
     { pluginVersions: { ...info.pluginVersions, '@gotgenes/pi-subagents': '21.8.2' } },
+  ])
+    assertResponse('runtime/info', { ...info, ...change })
+  for (const change of [
+    { sdkVersion: 'v0.99.1' },
+    { cliBuild: '0.99.2-beta.1' },
+    { nodeVersion: '24' },
+    { pluginVersions: {} },
   ])
     assert.throws(() => assertResponse('runtime/info', { ...info, ...change }))
 })

@@ -180,11 +180,13 @@ test('原生索引按文件状态缓存，设置使用官方 sessionDir', async 
   }
 })
 
-test('诊断读取实际包版本，拒绝 SDK 与每个插件漂移', () => {
+test('诊断读取实际包版本，接受更高版本，拒绝 SDK 与每个插件低于下限', () => {
   const installed = installedVersions()
   validateInstalledVersions(installed)
-  for (const name of Object.keys(installed))
+  for (const name of Object.keys(installed)) {
+    validateInstalledVersions({ ...installed, [name]: '999.0.0' })
     assert.throws(() => validateInstalledVersions({ ...installed, [name]: '0.0.0' }), /版本不符/)
+  }
 })
 
 test('edit 使用官方 unified patch，不投影带行号的展示 diff', () => {

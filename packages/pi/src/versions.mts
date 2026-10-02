@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isVersionAtLeast } from '../../shared/src/min-version.mjs'
 import { CODEX_PROTOCOL_VERSION } from '../../shared/src/runtime-version.mjs'
 
 export const versions = {
@@ -65,7 +66,7 @@ export function installedVersions(): Record<string, string> {
 }
 
 export function validateInstalledVersions(installed = installedVersions()): void {
-  for (const [name, expected] of Object.entries(expectedPackages))
-    if (installed[name] !== expected)
-      throw new Error(`${name} 版本不符: 需要 ${expected}，实际 ${installed[name] ?? '缺失'}`)
+  for (const [name, minimum] of Object.entries(expectedPackages))
+    if (!isVersionAtLeast(installed[name], minimum))
+      throw new Error(`${name} 版本不符: 需要 >= ${minimum}，实际 ${installed[name] ?? '缺失'}`)
 }
