@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/slovx2/codex-harness-adapter/internal/hostplatform"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 )
@@ -128,7 +129,7 @@ func TestSSHServerSupportsShellProxyAndRejectsForwarding(t *testing.T) {
 	t.Cleanup(cancel)
 	server, err := StartSSHServer(ctx, SSHOptions{
 		ListenAddr: "127.0.0.1:0", HostKeyFile: filepath.Join(t.TempDir(), "host_key"),
-		Home: t.TempDir(), CodexHome: t.TempDir(), Shell: "/bin/sh",
+		Home: t.TempDir(), CodexHome: t.TempDir(), Shell: hostplatform.DefaultShell(),
 		AuthorizedClients: []AuthorizedClient{{ID: "desktop", PublicKey: publicKey}},
 		Runtime:           desktopStub{},
 	})
@@ -232,7 +233,7 @@ func TestSSHServerDesktopProxyCompletesWebSocketHandshakeWithoutEOF(t *testing.T
 	t.Cleanup(cancel)
 	server, err := StartSSHServer(ctx, SSHOptions{
 		ListenAddr: "127.0.0.1:0", HostKeyFile: filepath.Join(t.TempDir(), "host_key"),
-		Home: t.TempDir(), CodexHome: t.TempDir(), Shell: "/bin/sh",
+		Home: t.TempDir(), CodexHome: t.TempDir(), Shell: hostplatform.DefaultShell(),
 		AuthorizedClients: []AuthorizedClient{{ID: "desktop", PublicKey: publicKey}},
 		Runtime:           desktopWebSocketStub{},
 	})

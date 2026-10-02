@@ -6,13 +6,14 @@ import (
 	"context"
 	"errors"
 	"github.com/pkg/sftp"
+	"github.com/slovx2/codex-harness-adapter/internal/hostplatform"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ssh"
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
-	"syscall"
 )
 
 func (s *SSHServer) serveSFTP(channel ssh.Channel) {
@@ -103,15 +104,19 @@ func (s *SSHServer) runProcess(ctx context.Context, channel ssh.Channel, state *
 	arguments := []string(nil)
 	if strings.TrimSpace(command) != "" {
 		if s.options.EntryBin != "" {
-			command = "export PATH=" + shellQuote(s.options.EntryBin) + ":\"$PATH\"; " + command
+			prefix := shellQuote(s.options.EntryBin)
+			if runtime.GOOS == "windows" {
+				prefix = "\"$(cygpath -u " + shellQuote(s.options.EntryBin) + ")\""
+			}
+			command = "export PATH=" + prefix + ":\"$PATH\"; " + command
 		}
 		arguments = []string{"-lc", command}
 	}
 	process := exec.CommandContext(ctx, s.options.Shell, arguments...)
 	if state.term == "" {
-		process.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		hostplatform.Prepare(process)
 	}
-	process.Cancel = func() error { return syscall.Kill(-process.Process.Pid, syscall.SIGKILL) }
+	process.Cancel = func() error { return hostplatform.Kill(process) }
 	process.Dir = s.options.Home
 	// 与 OpenSSH 一致由服务端导出登录 shell；Claude 入口的基础环境不继承宿主变量，
 	// 缺少 SHELL 时 Codex Desktop 远程启动器会直接拒绝连接。
@@ -148,6 +153,14 @@ func (s *SSHServer) runProcess(ctx context.Context, channel ssh.Channel, state *
 		s.writeExit(channel, exitStatus(err))
 		return
 	}
+	cleanup, err := hostplatform.Track(process)
+	if err != nil {
+		_ = hostplatform.Kill(process)
+		_ = process.Wait()
+		s.writeExit(channel, 1)
+		return
+	}
+	defer cleanup()
 	// 不让 exec.Wait 等待客户端输入 EOF。proxy 已退出时必须立即结束 SSH
 	// 会话，随后 channel.Close 会释放仍在等待客户端输入的转发协程。
 	go func() { _, _ = io.Copy(stdin, input); _ = stdin.Close() }()

@@ -5,10 +5,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/slovx2/codex-harness-adapter/internal/hostplatform"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 )
 
@@ -18,6 +20,9 @@ type configuration struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "pty-bridge" {
+		os.Exit(runPtyBridge(os.Args[2:]))
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, os.Args[1:]); err != nil {
@@ -105,7 +110,7 @@ func parseConfiguration(args []string) (configuration, error) {
 }
 
 func (c configuration) directory() string { return filepath.Join(c.home, c.harness) }
-func (c configuration) socket() string    { return filepath.Join(c.directory(), "runtime.sock") }
+func (c configuration) socket() string    { return hostplatform.SocketPath(c.directory()) }
 func (c configuration) adapter() string {
 	name := "claude"
 	if c.harness == "pi" {
@@ -139,6 +144,12 @@ func (c configuration) environment() []string {
 }
 
 func doctor(ctx context.Context, c configuration) error {
+	if runtime.GOOS == "windows" {
+		if _, err := exec.LookPath(hostplatform.DefaultShell()); err != nil {
+			return fmt.Errorf("Windows SSH 需要 Git for Windows 的 bash.exe: %w", err)
+		}
+		fmt.Println("Windows: 使用 ConPTY 和命名管道；Claude 受限 Bash 不可用，需要显式完全访问或 WSL2 沙箱")
+	}
 	command := exec.CommandContext(ctx, c.node, c.adapter(), "--runtime-info")
 	command.Env = c.environment()
 	output, err := command.CombinedOutput()

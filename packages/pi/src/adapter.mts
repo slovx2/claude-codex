@@ -2,6 +2,7 @@
 import { spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { cliCommand, resolveHostCli } from '../../shared/src/host-cli.mjs'
 import { isVersionAtLeast } from '../../shared/src/min-version.mjs'
 import { ProcessRpc } from '../../shared/src/process-rpc.mjs'
 import { codexCliVersion } from '../../shared/src/runtime-version.mjs'
@@ -24,7 +25,13 @@ async function main(): Promise<void> {
     return
   }
   if (args[0] === '--runtime-info') {
-    const cli = spawnSync(process.env.PI_CLI ?? 'pi', ['--version'], {
+    const executable = resolveHostCli(
+      process.env.PI_CLI ?? 'pi',
+      '@earendil-works/pi-coding-agent',
+      'dist/cli.js',
+    )
+    const [command, ...cliArgs] = cliCommand(executable, ['--version'])
+    const cli = spawnSync(command!, cliArgs, {
       encoding: 'utf8',
       timeout: 10000,
     })
@@ -103,7 +110,11 @@ async function ptyCheck(): Promise<void> {
       cwd: process.cwd(),
       tty: true,
       size: { rows: 7, cols: 13 },
-      command: ['/bin/sh', '-c', 'test -t 0 && test -t 1 && stty size'],
+      command: [
+        process.execPath,
+        '-e',
+        'if (!process.stdin.isTTY || !process.stdout.isTTY) process.exit(1); console.log(process.stdout.rows + " " + process.stdout.columns)',
+      ],
     })
     const result = await ended
     if (result.exitCode !== 0 || !output.includes('7 13')) throw new Error('Pi PTY 自检失败')

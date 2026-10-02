@@ -7,10 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"sync"
 
-	"github.com/creack/pty"
+	"github.com/slovx2/codex-harness-adapter/internal/hostplatform"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ssh"
 )
@@ -61,7 +60,7 @@ func StartSSHServer(ctx context.Context, options SSHOptions) (*SSHServer, error)
 		return nil, errors.New("SSH Server 配置不完整")
 	}
 	if options.Shell == "" {
-		options.Shell = "/bin/sh"
+		options.Shell = hostplatform.DefaultShell()
 	}
 	if options.Logger == nil {
 		options.Logger = zap.NewNop()
@@ -220,7 +219,7 @@ type sshSessionState struct {
 	columns     uint32
 	rows        uint32
 	started     bool
-	process     *os.File
+	resize      func(uint32, uint32) error
 }
 
 func (s *SSHServer) handleSession(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request) {
@@ -252,8 +251,8 @@ func (s *SSHServer) handleSession(ctx context.Context, channel ssh.Channel, requ
 			var input struct{ Columns, Rows, Width, Height uint32 }
 			if ssh.Unmarshal(request.Payload, &input) == nil {
 				state.columns, state.rows = input.Columns, input.Rows
-				if state.process != nil {
-					_ = pty.Setsize(state.process, &pty.Winsize{Cols: uint16(input.Columns), Rows: uint16(input.Rows)})
+				if state.resize != nil {
+					_ = state.resize(input.Columns, input.Rows)
 				}
 			}
 		case "subsystem":

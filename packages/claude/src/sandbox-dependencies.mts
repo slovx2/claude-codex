@@ -9,6 +9,8 @@ export function validateSandboxDependencies(
     else execFileSync(command, args, { timeout: 5_000, stdio: 'pipe' })
   },
 ): void {
+  // Windows 可运行原生 SDK；受限 Bash 仍由 command-sandbox 明确拒绝，绝不自动提权。
+  if (platform === 'win32') return
   const commands: Array<[string, string[]]> =
     platform === 'linux'
       ? [

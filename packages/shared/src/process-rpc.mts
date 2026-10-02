@@ -16,7 +16,6 @@ const DEFAULT_OUTPUT_BYTES_CAP = 1_048_576
 const IO_DRAIN_TIMEOUT_MS = 2_000
 const EXEC_TIMEOUT_EXIT_CODE = 124
 const DEFAULT_SIZE = { rows: 24, cols: 80 }
-const PTY_PYTHON = 'python3'
 
 type Kind = 'command' | 'process'
 type Stream = 'stdout' | 'stderr'
@@ -125,6 +124,15 @@ function spawnFailureMessage(kind: Kind, detail: string): ProtocolError {
 
 function ptyBridgePath(): string {
   const here = dirname(fileURLToPath(import.meta.url))
+  if (process.platform === 'win32') {
+    let directory = here
+    while (directory !== dirname(directory)) {
+      const candidate = resolve(directory, 'bin/codex-harness-adapter.exe')
+      if (existsSync(candidate)) return candidate
+      directory = dirname(directory)
+    }
+    return ''
+  }
   return (
     [
       resolve(here, '../../../../scripts/pty-bridge.py'),
@@ -207,8 +215,9 @@ export class ProcessRpc {
       kind === 'command' ? this.commandPolicy(plan.command, plan.cwd, params) : plan.command
     const argv = plan.tty
       ? [
-          PTY_PYTHON,
-          this.ptyBridge(kind),
+          ...(process.platform === 'win32'
+            ? [this.ptyBridge(kind), 'pty-bridge']
+            : ['python3', this.ptyBridge(kind)]),
           '--rows',
           String(plan.size.rows),
           '--cols',
@@ -381,7 +390,7 @@ export class ProcessRpc {
 
   private ptyBridge(kind: Kind): string {
     const bridge = ptyBridgePath()
-    if (!bridge) throw spawnFailureMessage(kind, 'PTY 桥脚本 scripts/pty-bridge.py 缺失')
+    if (!bridge) throw spawnFailureMessage(kind, 'PTY 桥缺失，请先运行 npm run build')
     return bridge
   }
 
@@ -643,8 +652,14 @@ export class ProcessRpc {
     const pid = record.tty ? record.bridgePid : (record.child.pid ?? null)
     if (pid == null) return
     try {
-      if (process.platform === 'win32') record.child.kill('SIGKILL')
-      else process.kill(-pid, 'SIGKILL')
+      if (process.platform === 'win32') {
+        if (!record.tty) {
+          const killer = spawn('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+            stdio: 'ignore',
+          })
+          killer.on('error', (error) => debugLog('process.kill.error', { error: error.message }))
+        }
+      } else process.kill(-pid, 'SIGKILL')
     } catch (error) {
       // 与原生一致：进程组已经消失（ESRCH）等失败不影响收尾。
       debugLog('process.kill.error', {

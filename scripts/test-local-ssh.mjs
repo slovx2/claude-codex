@@ -3,14 +3,16 @@ import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { Duplex } from 'node:stream'
 import { WebSocket } from 'ws'
 import { MockLLM } from '../packages/claude/dist/claude/test/fixtures/mock-llm.mjs'
 
 // 真实 SDK 经真实 SSH 与 WebSocket 接入；此测试不代表桌面 GUI 验收。
-const root = await mkdtemp('/tmp/cha-ssh-')
-const cli = resolve('bin/codex-harness-adapter')
+const windows = process.platform === 'win32'
+const root = await mkdtemp(join(windows ? tmpdir() : '/tmp', 'cha-ssh-'))
+const cli = resolve(`bin/codex-harness-adapter${windows ? '.exe' : ''}`)
 const active = []
 const models = []
 let calls = 0
@@ -34,14 +36,34 @@ async function runHarness(harness, port) {
   const home = join(root, harness)
   await mkdir(home, { recursive: true })
   const env = {
-    PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
+    PATH: windows ? process.env.PATH : `${dirname(process.execPath)}:/usr/bin:/bin`,
+    ...(windows
+      ? {
+          SystemRoot: process.env.SystemRoot,
+          WINDIR: process.env.WINDIR,
+          ComSpec: process.env.ComSpec,
+          PATHEXT: process.env.PATHEXT,
+          TEMP: root,
+          TMP: root,
+          USERPROFILE: home,
+          CLAUDE_CODE_GIT_BASH_PATH: process.env.CLAUDE_CODE_GIT_BASH_PATH,
+        }
+      : {}),
     HOME: home,
     SHELL: '/bin/sh',
     TMPDIR: root,
     CLAUDE_CONFIG_DIR: join(home, 'claude'),
     PI_CODING_AGENT_DIR: join(home, 'pi'),
-    CHA_CLAUDE_CLI: resolve('.artifacts/host-cli/node_modules/.bin/claude'),
-    PI_CLI: resolve('packages/pi/node_modules/.bin/pi'),
+    CHA_CLAUDE_CLI: resolve(
+      windows
+        ? '.artifacts/host-cli/node_modules/@anthropic-ai/claude-code/bin/claude.exe'
+        : '.artifacts/host-cli/node_modules/.bin/claude',
+    ),
+    PI_CLI: resolve(
+      windows
+        ? 'packages/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js'
+        : 'packages/pi/node_modules/.bin/pi',
+    ),
     DISABLE_AUTOUPDATER: '1',
     DISABLE_TELEMETRY: '1',
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
@@ -91,6 +113,8 @@ async function runHarness(harness, port) {
   ]
   let result = spawnSync(cli, ['init', ...args], { env, encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
+  const doctor = spawnSync(cli, ['doctor', ...args], { env, encoding: 'utf8', timeout: 30000 })
+  assert.equal(doctor.status, 0, doctor.stderr + doctor.stdout)
   result = spawnSync(cli, ['ssh-config', ...args], { env, encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
   const config = join(home, 'ssh_config')
@@ -153,6 +177,7 @@ async function runHarness(harness, port) {
     const { thread } = await rpc('thread/start', {
       cwd: home,
       model: harness === 'pi' ? 'local/ssh-test' : 'claude-sonnet-4-6',
+      ...(windows ? { sandbox: 'danger-full-access', approvalPolicy: 'never' } : {}),
     })
     const { turn } = await rpc('turn/start', {
       threadId: thread.id,
@@ -183,7 +208,7 @@ async function runHarness(harness, port) {
     const closed = once(service, 'exit')
     service.kill('SIGTERM')
     await closed
-    assert.equal(service.exitCode, 0, errors)
+    if (!windows) assert.equal(service.exitCode, 0, errors)
     await assert.rejects(readFile(join(root, 'state', harness, 'runtime.sock')))
   }
 }

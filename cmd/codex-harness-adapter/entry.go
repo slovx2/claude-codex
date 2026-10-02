@@ -4,27 +4,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/slovx2/codex-harness-adapter/internal/hostplatform"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 type localRuntime struct{ socket string }
 
 func (r localRuntime) ServeDesktop(connection net.Conn) error {
-	upstream, err := net.DialTimeout("unix", r.socket, 5*time.Second)
+	upstream, err := hostplatform.Dial(r.socket)
 	if err != nil {
 		return err
 	}
 	defer upstream.Close()
 	go func() {
 		_, _ = io.Copy(upstream, connection)
-		if socket, ok := upstream.(*net.UnixConn); ok {
-			_ = socket.CloseWrite()
-		}
+		hostplatform.CloseWrite(upstream)
 	}()
 	_, err = io.Copy(connection, upstream)
 	return err
@@ -40,7 +38,7 @@ func installEntry(c configuration, version string) error {
 		return err
 	}
 	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
-	entry := "#!/bin/sh\nexec " + quote(executable) + " entry " + quote(c.socket()) + " " + quote(version) + " \"$@\"\n"
+	entry := "#!/bin/sh\nexec " + quote(hostplatform.ShellPath(executable)) + " entry " + quote(c.socket()) + " " + quote(version) + " \"$@\"\n"
 	return os.WriteFile(filepath.Join(directory, "codex"), []byte(entry), 0o700)
 }
 
@@ -54,20 +52,20 @@ func runEntry(ctx context.Context, args []string) error {
 		fmt.Println("codex-cli " + version)
 		return nil
 	case "app-server daemon start":
-		connection, err := net.DialTimeout("unix", socket, 5*time.Second)
+		connection, err := hostplatform.Dial(socket)
 		if err != nil {
 			return err
 		}
 		return connection.Close()
 	case "app-server proxy":
-		connection, err := net.DialTimeout("unix", socket, 5*time.Second)
+		connection, err := hostplatform.Dial(socket)
 		if err != nil {
 			return err
 		}
 		defer connection.Close()
 		stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
 		defer stop()
-		go func() { _, _ = io.Copy(connection, os.Stdin); _ = connection.(*net.UnixConn).CloseWrite() }()
+		go func() { _, _ = io.Copy(connection, os.Stdin); hostplatform.CloseWrite(connection) }()
 		_, err = io.Copy(os.Stdout, connection)
 		return err
 	default:

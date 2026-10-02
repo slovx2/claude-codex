@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -15,7 +16,11 @@ import (
 
 func testConfiguration(t *testing.T) configuration {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "cha-")
+	base := "/tmp"
+	if runtime.GOOS == "windows" {
+		base = os.TempDir()
+	}
+	dir, err := os.MkdirTemp(base, "cha-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +54,7 @@ func TestIdentityPreservedAndHarnessIsolated(t *testing.T) {
 		t.Fatal("重复初始化覆盖了密钥")
 	}
 	stat, _ := os.Stat(path)
-	if stat.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && stat.Mode().Perm() != 0o600 {
 		t.Fatal("私钥权限错误")
 	}
 	cfg.harness = "claude-code"

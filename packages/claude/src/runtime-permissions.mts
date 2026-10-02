@@ -1,5 +1,5 @@
 import { realpathSync } from 'node:fs'
-import { dirname, isAbsolute, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { sandboxCommand } from './command-sandbox.mjs'
 import { isGoalTool } from './goal-tools.mjs'
 import { activePermissionRoots, permissionToolName } from './permission-grants.mjs'
@@ -62,7 +62,7 @@ function writableRoots(context: RuntimeTurnContext): string[] {
 
 function inside(root: string, target: string): boolean {
   const child = relative(root, target)
-  return child !== '..' && !child.startsWith('../') && !isAbsolute(child)
+  return child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child)
 }
 
 export function sandboxedBashInput(context: RuntimeTurnContext, input: Record<string, unknown>) {
@@ -96,12 +96,12 @@ export function isPlanFile(
   const rootWithinProject = relative(resolvedTarget(context.cwd), root)
   if (
     rootWithinProject === '..' ||
-    rootWithinProject.startsWith('../') ||
+    rootWithinProject.startsWith(`..${sep}`) ||
     isAbsolute(rootWithinProject)
   )
     return false
   const child = relative(root, resolvedTarget(resolve(context.cwd, input.file_path)))
-  return child.length > 0 && child !== '..' && !child.startsWith('../') && !isAbsolute(child)
+  return child.length > 0 && child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child)
 }
 
 function resolvedTarget(path: string): string {

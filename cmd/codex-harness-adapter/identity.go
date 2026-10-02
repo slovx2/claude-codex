@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/slovx2/codex-harness-adapter/internal/hostplatform"
 	"github.com/slovx2/codex-harness-adapter/sshserver"
 	"golang.org/x/crypto/ssh"
 )
@@ -19,6 +20,9 @@ func initialize(c configuration) error {
 		return errors.New("必须指定 --harness")
 	}
 	if err := os.MkdirAll(c.directory(), 0o700); err != nil {
+		return err
+	}
+	if err := hostplatform.Protect(c.directory()); err != nil {
 		return err
 	}
 	clientPath := filepath.Join(c.directory(), "identity")
@@ -44,6 +48,9 @@ func initialize(c configuration) error {
 	}
 	client, err := readIdentity(clientPath)
 	if err != nil {
+		return err
+	}
+	if err := hostplatform.Protect(clientPath); err != nil {
 		return err
 	}
 	if err := os.WriteFile(clientPath+".pub", ssh.MarshalAuthorizedKey(client.PublicKey()), 0o600); err != nil {
@@ -77,7 +84,7 @@ func printSSHConfig(c configuration) error {
 		return err
 	}
 	// 输出可直接粘贴的 OpenSSH 配置；绝不修改用户的全局配置。
-	quote := func(value string) string { return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"` }
+	quote := func(value string) string { return `"` + strings.ReplaceAll(filepath.ToSlash(value), `"`, `\"`) + `"` }
 	alias := c.harness
 	if alias == "claude-code" {
 		alias = "claude"

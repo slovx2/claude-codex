@@ -26,7 +26,7 @@
   ],
   "scripts": {
     "dev": "tsx packages/claude/src/adapter.mts",
-    "build": "npm run build --prefix packages/claude && npm run build --prefix packages/pi && go build -o bin/codex-harness-adapter ./cmd/codex-harness-adapter",
+    "build": "npm run build --prefix packages/claude && npm run build --prefix packages/pi && node scripts/build-cli.mjs",
     "typecheck": "npm run typecheck --prefix packages/claude && npm run typecheck --prefix packages/pi",
     "lint": "biome lint packages scripts",
     "format": "biome format --write packages scripts",

@@ -118,16 +118,18 @@ export async function startWebSocketTransport(
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
     server.once('listening', resolve)
-    if (parsed.kind === 'unix') {
-      ensureParent(parsed.path)
-      if (existsSync(parsed.path)) rmSync(parsed.path, { force: true })
+    if (parsed.kind === 'unix' || parsed.kind === 'pipe') {
+      if (parsed.kind === 'unix') {
+        ensureParent(parsed.path)
+        if (existsSync(parsed.path)) rmSync(parsed.path, { force: true })
+      }
       server.listen(parsed.path)
     } else {
       server.listen(parsed.port, parsed.host)
     }
   })
 
-  if (parsed.kind === 'unix') {
+  if (parsed.kind === 'unix' || parsed.kind === 'pipe') {
     process.stderr.write(`[codex-harness-adapter] listening on ${parsed.path}\n`)
   } else {
     process.stderr.write(
@@ -211,7 +213,16 @@ export function parseProxySockArg(args: string[]): string {
 
 function parseListenUrl(
   listenUrl: string,
-): { kind: 'unix'; path: string } | { kind: 'ws'; host: string; port: number } {
+):
+  | { kind: 'unix'; path: string }
+  | { kind: 'pipe'; path: string }
+  | { kind: 'ws'; host: string; port: number } {
+  if (listenUrl.startsWith('pipe://')) {
+    const path = listenUrl.slice('pipe://'.length)
+    if (process.platform !== 'win32' || !path.startsWith('\\\\.\\pipe\\'))
+      throw new Error('pipe:// 仅支持本机 Windows 命名管道')
+    return { kind: 'pipe', path }
+  }
   if (listenUrl === 'unix://') return { kind: 'unix', path: defaultSocketPath() }
   if (listenUrl.startsWith('unix://')) {
     const path = listenUrl.slice('unix://'.length)

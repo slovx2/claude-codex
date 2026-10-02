@@ -27,6 +27,11 @@ export function sandboxCommand(
   if (!['readOnly', 'workspaceWrite', 'dangerFullAccess'].includes(String(policy.type)))
     throw new ProtocolError(-32602, '不支持此 command sandboxPolicy')
   if (policy.type === 'dangerFullAccess') return command
+  if (process.platform === 'win32')
+    throw new ProtocolError(
+      -32004,
+      'Windows 原生宿主没有操作系统沙箱；请显式选择完全访问，或在 WSL2 内运行',
+    )
   if (policy.networkAccess != null && typeof policy.networkAccess !== 'boolean')
     throw new ProtocolError(-32602, 'networkAccess 必须为布尔值')
   for (const key of ['excludeSlashTmp', 'excludeTmpdirEnvVar'])

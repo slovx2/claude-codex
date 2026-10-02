@@ -221,7 +221,11 @@ async function ptySelfCheck(): Promise<void> {
       cwd: process.cwd(),
       tty: true,
       size: { rows: 7, cols: 13 },
-      command: ['/bin/sh', '-c', 'test -t 0 && test -t 1 && stty size'],
+      command: [
+        process.execPath,
+        '-e',
+        'if (!process.stdin.isTTY || !process.stdout.isTTY) process.exit(1); console.log(process.stdout.rows + " " + process.stdout.columns)',
+      ],
     })
     const result = await Promise.race([exited, timeout])
     if (result.exitCode !== 0) throw new Error(`PTY 自检退出码为 ${result.exitCode}`)

@@ -1,12 +1,15 @@
 package sshserver
 
-import "strings"
+import (
+	"runtime"
+	"strings"
+)
 
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 
 func environmentValue(environment []string, name string) string {
 	for _, entry := range environment {
-		if key, value, ok := strings.Cut(entry, "="); ok && key == name {
+		if key, value, ok := strings.Cut(entry, "="); ok && (key == name || runtime.GOOS == "windows" && strings.EqualFold(key, name)) {
 			return value
 		}
 	}
@@ -17,7 +20,14 @@ func replaceEnvironment(base []string, values map[string]string) []string {
 	result := make([]string, 0, len(base)+len(values))
 	for _, entry := range base {
 		key, _, _ := strings.Cut(entry, "=")
-		if _, exists := values[key]; !exists {
+		exists := false
+		for name := range values {
+			if key == name || runtime.GOOS == "windows" && strings.EqualFold(key, name) {
+				exists = true
+				break
+			}
+		}
+		if !exists {
 			result = append(result, entry)
 		}
 	}
