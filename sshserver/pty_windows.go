@@ -13,7 +13,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func (s *SSHServer) runPTY(channel ssh.Channel, state *sshSessionState, process *exec.Cmd) {
+func (s *SSHServer) runPTY(ctx context.Context, channel ssh.Channel, state *sshSessionState, process *exec.Cmd) {
 	state.mu.Lock()
 	terminal, err := conpty.Start(windows.ComposeCommandLine(process.Args), conpty.ConPtyDimensions(int(state.columns), int(state.rows)), conpty.ConPtyWorkDir(process.Dir), conpty.ConPtyEnv(process.Env))
 	if err == nil {
@@ -35,7 +35,7 @@ func (s *SSHServer) runPTY(channel ssh.Channel, state *sshSessionState, process 
 		once.Do(func() { state.mu.Lock(); state.resize = nil; cleanup(); _ = terminal.Close(); state.mu.Unlock() })
 	}
 	defer closeTerminal()
-	stop := context.AfterFunc(s.context, closeTerminal)
+	stop := context.AfterFunc(ctx, closeTerminal)
 	defer stop()
 	drained := make(chan struct{})
 	go func() { _, _ = io.Copy(terminal, channel); closeTerminal() }()

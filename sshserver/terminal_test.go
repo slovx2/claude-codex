@@ -99,7 +99,8 @@ func TestPTYResizeSFTPAndWrongKey(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, accepted)
 	// 同一 SSH 通道中的 window-change 先于后续输入发送，输出必须来自调整后的终端。
-	_, err = io.WriteString(stdin, "go\n")
+	// 终端 Enter 发送 CR，POSIX 行规程和 Windows 控制台都会提交输入行。
+	_, err = io.WriteString(stdin, "go\r")
 	require.NoError(t, err)
 	output, err := io.ReadAll(reader)
 	require.NoError(t, err)

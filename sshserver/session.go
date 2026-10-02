@@ -139,7 +139,7 @@ func (s *SSHServer) runProcess(ctx context.Context, channel ssh.Channel, state *
 	}
 	process.Env = replaceEnvironment(environment, values)
 	if state.term != "" {
-		s.runPTY(channel, state, process)
+		s.runPTY(ctx, channel, state, process)
 		return
 	}
 	process.Stdout, process.Stderr = channel, channel.Stderr()

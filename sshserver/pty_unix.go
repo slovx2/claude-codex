@@ -3,13 +3,14 @@
 package sshserver
 
 import (
+	"context"
 	"github.com/creack/pty"
 	"golang.org/x/crypto/ssh"
 	"io"
 	"os/exec"
 )
 
-func (s *SSHServer) runPTY(channel ssh.Channel, state *sshSessionState, process *exec.Cmd) {
+func (s *SSHServer) runPTY(_ context.Context, channel ssh.Channel, state *sshSessionState, process *exec.Cmd) {
 	state.mu.Lock()
 	terminal, err := pty.StartWithSize(process, &pty.Winsize{
 		Cols: uint16(state.columns), Rows: uint16(state.rows),
