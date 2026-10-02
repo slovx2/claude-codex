@@ -227,7 +227,14 @@ async function runHarness(harness, port) {
       sandboxPolicy: { type: 'dangerFullAccess' },
     })
     assert.equal(terminal.exitCode, 0, JSON.stringify(terminal))
-    assert.match(terminal.stdout, /PTY_OK/)
+    const terminalOutput = notifications
+      .filter(
+        (message) =>
+          message.method === 'command/exec/outputDelta' && message.params.processId === 'ssh-pty',
+      )
+      .map((message) => Buffer.from(message.params.deltaBase64, 'base64').toString())
+      .join('')
+    assert.match(terminalOutput, /PTY_OK/)
     const { thread } = await rpc('thread/start', {
       cwd: home,
       model: harness === 'pi' ? 'local/ssh-test' : 'claude-sonnet-4-6',
