@@ -51,7 +51,9 @@ func TestPTYResizeSFTPAndWrongKey(t *testing.T) {
 	files, err := sftp.NewClient(client)
 	require.NoError(t, err)
 	defer files.Close()
-	path := filepath.ToSlash(filepath.Join(home, "sftp-example.txt"))
+	remoteHome, err := files.RealPath(".")
+	require.NoError(t, err)
+	path := remoteHome + "/sftp-example.txt"
 	file, err := files.Create(path)
 	require.NoError(t, err)
 	_, err = file.Write([]byte("SFTP_WINDOWS_UNIX"))

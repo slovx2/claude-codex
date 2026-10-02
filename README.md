@@ -4,7 +4,7 @@
 
 把 Claude Code 或 Pi 接入 Codex 的 SSH 连接入口，在同一个桌面界面中使用不同的编码引擎。适配器运行在你的机器上，复用引擎自己的工具、会话和配置。
 
-目前提供 Claude Code 和 Pi 两种适配器，支持 macOS、Linux。项目处于开发阶段；客户端协议固定为 Codex app-server **0.157.1**，桌面端更新后需要重新验证连接行为。
+目前提供 Claude Code 和 Pi 两种适配器，支持 macOS、Linux 和 Windows 原生环境。项目处于开发阶段；客户端协议固定为 Codex app-server **0.157.1**，桌面端更新后需要重新验证连接行为。
 
 ## 工作方式
 
@@ -32,7 +32,11 @@ Codex 桌面端
 
 依赖版本由 package.json、锁文件和 `protocol/versions.json` 记录。运行时对宿主 CLI 执行最低版本检查；不自动安装或升级用户的 CLI。
 
-终端功能需要 Python 3、POSIX shell 和系统常用命令。Claude 在 Linux 上还需要 bubblewrap、socat 和可用的用户命名空间；macOS 使用系统 sandbox-exec。缺少沙箱依赖会报错，不会静默改成无沙箱执行。
+macOS/Linux 的终端功能需要 Python 3、POSIX shell 和系统常用命令。Claude 在 Linux 上还需要 bubblewrap、socat 和可用的用户命名空间；macOS 使用系统 sandbox-exec。缺少沙箱依赖会报错，不会静默改成无沙箱执行。
+
+Windows 使用原生 ConPTY、命名管道和 Job Object，不依赖 WSL 或 Python。需要支持 ConPTY 的 Windows 10/11、Git for Windows，以及固定版本 Node、Go。SSH 登录 shell 使用 Git Bash；可通过 `CLAUDE_CODE_GIT_BASH_PATH` 指定 `bash.exe`。Windows CI 在 Windows Server 2025 x64 上验证。
+
+**Windows 沙箱限制：** Claude 原生 Windows 环境不提供操作系统沙箱。选择“完全访问”后可执行命令；只读、工作区沙箱和计划模式中的受限 Bash 会明确报错，不会自动放宽权限。需要操作系统沙箱时，在 WSL2 内按 Linux 方式运行。文件工具仍遵守适配器的审批和路径检查。
 
 先安装需要使用的官方 Claude Code 或 Pi CLI，并通过原生工具配置模型和登录。可用 `CHA_CLAUDE_CLI`、`PI_CLI` 指定 CLI 路径；原生 `CLAUDE_CONFIG_DIR`、`PI_CODING_AGENT_DIR` 等配置仍由对应引擎管理。
 
@@ -47,6 +51,22 @@ npm ci --prefix packages/pi
 npm run build
 ./bin/codex-harness-adapter doctor
 ```
+
+Windows 在 PowerShell 中执行同样的 clone、npm 安装和构建命令，随后使用 `.exe`：
+
+```powershell
+.\bin\codex-harness-adapter.exe doctor
+.\bin\codex-harness-adapter.exe init --harness claude-code
+.\bin\codex-harness-adapter.exe ssh-config --harness claude-code
+.\bin\codex-harness-adapter.exe serve --harness claude-code
+```
+
+Pi 将 `--harness` 改为 `pi`。默认状态位于 `%USERPROFILE%\.codex-harness-adapter`。
+私钥目录会应用当前 Windows 用户的专用 ACL。测试连接需要启用 Windows 的 OpenSSH Client；
+将配置添加到 `%USERPROFILE%\.ssh\config` 后，使用 `ssh codex-harness-adapter-claude 'codex --version'` 检查。
+也可以在所有平台使用 `npm run doctor` 和 `npm start -- --harness pi`。
+
+原生 Windows SSH/SDK 自动化验收不代表已经完成 Codex 桌面 GUI 验收；该项仍待实际客户端确认。
 
 只检查某一个引擎：
 

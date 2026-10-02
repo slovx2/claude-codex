@@ -14,7 +14,7 @@
   },
   "type": "module",
   "bin": {
-    "codex-harness-adapter": "bin/codex-harness-adapter"
+    "codex-harness-adapter": "scripts/run-cli.mjs"
   },
   "files": [
     "dist/",
@@ -37,7 +37,7 @@
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
     "test": "npm run test --prefix packages/claude && npm run test --prefix packages/pi && go test ./...",
-    "doctor": "bin/codex-harness-adapter doctor",
+    "doctor": "node scripts/run-cli.mjs doctor",
     "workflow": "npm run build && node packages/claude/dist/claude/src/workflow-cli.mjs",
     "workflow:schedule": "npm run workflow -- schedule",
     "smoke:real": "npm run build && node scripts/smoke-real-claude.mjs",
@@ -46,7 +46,7 @@
     "acceptance:gui-ssh-localhost": "npm run build && node scripts/acceptance-gui-ssh-localhost.mjs",
     "acceptance:ssh-runtime-matrix": "npm run build && node scripts/acceptance-ssh-runtime-matrix.mjs",
     "probe:codex-cli-remote": "npm run build && node scripts/probe-codex-cli-remote.mjs",
-    "start": "bin/codex-harness-adapter serve",
+    "start": "node scripts/run-cli.mjs serve",
     "generate:schema": "codex app-server generate-ts --experimental --out generated/codex-app-server",
     "test:protocol": "npm run build && node scripts/test-protocol.mjs",
     "test:local-ssh": "node scripts/test-local-ssh.mjs"

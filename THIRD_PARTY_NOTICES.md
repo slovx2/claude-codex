@@ -1,5 +1,8 @@
 # 第三方来源与许可
 
+- Windows ConPTY 使用 `github.com/UserExistsError/conpty v0.1.4`，MIT，Copyright (c) 2020 UserExistsError。
+- Windows 命名管道使用 `github.com/Microsoft/go-winio v0.6.2`，MIT，版权归 Microsoft Corporation。
+
 - 基础适配器来自 https://github.com/fuergaosi233/claude-codex ，MIT，Copyright (c) 2026 fuergaosi233。原始许可证保留在 LICENSE。
 - SSH 通用代码来自 Tyrs Hand，MIT，Copyright (c) 2026 tyrs-hand contributors。源文件保留署名。
 - Pi 来自 https://github.com/earendil-works/pi ，MIT，Copyright (c) 2025 Mario Zechner。Pi 插件及所有依赖包按其随包许可证分发。

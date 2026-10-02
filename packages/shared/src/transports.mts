@@ -3,6 +3,7 @@ import http from 'node:http'
 import net from 'node:net'
 import readline from 'node:readline'
 import { WebSocket, WebSocketServer } from 'ws'
+import { nativeWirePaths } from './native-path.mjs'
 import type { RpcPeer, WireMessage } from './types.mjs'
 import { defaultSocketPath, ensureParent, newId, sleep } from './util.mjs'
 
@@ -70,7 +71,7 @@ export function startStdioTransport(
     const trimmed = line.trim()
     if (!trimmed) return
     try {
-      void onMessage(peer, JSON.parse(trimmed) as WireMessage)
+      void onMessage(peer, nativeWirePaths(JSON.parse(trimmed) as WireMessage))
     } catch (error) {
       peer.send({
         jsonrpc: '2.0',
@@ -103,7 +104,7 @@ export async function startWebSocketTransport(
     ws.on('message', (data) => {
       try {
         const text = Buffer.isBuffer(data) ? data.toString('utf8') : String(data)
-        void onMessage(peer, JSON.parse(text) as WireMessage)
+        void onMessage(peer, nativeWirePaths(JSON.parse(text) as WireMessage))
       } catch (error) {
         peer.send({
           jsonrpc: '2.0',

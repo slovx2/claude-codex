@@ -17,7 +17,7 @@ import (
 )
 
 func (s *SSHServer) serveSFTP(channel ssh.Channel) {
-	server, err := sftp.NewServer(channel, sftp.WithServerWorkingDirectory(s.options.Home))
+	server, err := sftp.NewServer(channel, sftp.WithServerWorkingDirectory(s.options.Home), sftp.WindowsRootEnumeratesDrives())
 	if err != nil {
 		s.writeExit(channel, 1)
 		return

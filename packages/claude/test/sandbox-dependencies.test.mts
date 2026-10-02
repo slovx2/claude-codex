@@ -20,5 +20,6 @@ test('Linux 缺少 socat 或 bwrap 时构建探测必须失败，不报告完整
     seen.push(command)
   })
   assert.deepEqual(seen, ['bwrap', 'socat'])
-  assert.throws(() => validateSandboxDependencies('win32', () => {}), /暂不支持/)
+  assert.doesNotThrow(() => validateSandboxDependencies('win32', () => {}))
+  assert.throws(() => validateSandboxDependencies('freebsd', () => {}), /暂不支持/)
 })
