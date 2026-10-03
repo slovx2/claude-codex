@@ -17,6 +17,7 @@ import (
 type configuration struct {
 	harness, home, root, node string
 	port                      int
+	claudePort, piPort        int
 }
 
 func main() {
@@ -32,25 +33,49 @@ func main() {
 }
 
 func run(ctx context.Context, args []string) error {
-	if len(args) == 0 {
-		return errors.New("用法: codex-harness-adapter init|serve|ssh-config|doctor --harness claude-code|pi [--port PORT]")
+	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
+		fmt.Println("用法: codex-harness-adapter start|init|serve|ssh-config|doctor [选项]\nstart: 自动初始化并启动可用的 Claude Code 和 Pi；可用 --harness claude-code|pi 仅启动一个\n全部启动端口: --claude-port 7331 --pi-port 7332\n单入口端口: --harness claude-code|pi --port PORT\n公共选项: --home DIR --node PATH --root DIR\n首次连接: Codex 设置 → 连接 → SSH → 添加；可选将输出的配置加入 ~/.ssh/config；Ctrl-C 停止全部入口")
+		return nil
 	}
 	if args[0] == "entry" {
 		return runEntry(ctx, args[1:])
 	}
 	command := args[0]
-	if command != "init" && command != "serve" && command != "ssh-config" && command != "doctor" {
+	if command != "start" && command != "init" && command != "serve" && command != "ssh-config" && command != "doctor" {
 		return fmt.Errorf("未知命令: %s", command)
 	}
 	cfg, err := parseConfiguration(args[1:])
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	switch command {
+	case "start":
+		return start(ctx, cfg)
 	case "init":
-		return initialize(cfg)
+		for _, entry := range cfg.entries() {
+			if err := initialize(entry); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "ssh-config":
-		return printSSHConfig(cfg)
+		var failures []error
+		printed := false
+		for _, entry := range cfg.entries() {
+			if err := printSSHConfig(entry); err != nil {
+				failures = append(failures, fmt.Errorf("%s: %w", entry.harness, err))
+				fmt.Fprintf(os.Stderr, "警告：跳过 %s，请先启动或初始化此入口: %v\n", entry.harness, err)
+				continue
+			}
+			printed = true
+		}
+		if !printed {
+			return errors.Join(failures...)
+		}
+		return nil
 	case "serve":
 		return serve(ctx, cfg)
 	case "doctor":
@@ -83,6 +108,8 @@ func parseConfiguration(args []string) (configuration, error) {
 	flags.StringVar(&cfg.root, "root", filepath.Dir(filepath.Dir(executable)), "适配器源码根目录")
 	flags.StringVar(&cfg.node, "node", "node", "Node 可执行文件")
 	flags.IntVar(&cfg.port, "port", 0, "回环 SSH 端口")
+	flags.IntVar(&cfg.claudePort, "claude-port", 7331, "全部启动时 Claude SSH 端口")
+	flags.IntVar(&cfg.piPort, "pi-port", 7332, "全部启动时 Pi SSH 端口")
 	if err := flags.Parse(args); err != nil {
 		return cfg, err
 	}
@@ -92,10 +119,16 @@ func parseConfiguration(args []string) (configuration, error) {
 	if cfg.harness != "" && cfg.harness != "claude-code" && cfg.harness != "pi" {
 		return cfg, errors.New("harness 必须为 claude-code 或 pi")
 	}
+	if cfg.harness == "" && cfg.port != 0 {
+		return cfg, errors.New("--port 需要指定 --harness；全部启动请用 --claude-port 和 --pi-port")
+	}
+	if cfg.claudePort < 1 || cfg.claudePort > 65535 || cfg.piPort < 1 || cfg.piPort > 65535 || cfg.claudePort == cfg.piPort {
+		return cfg, errors.New("Claude 和 Pi 端口必须不同，且在 1 到 65535 之间")
+	}
 	if cfg.port == 0 {
-		cfg.port = 7331
+		cfg.port = cfg.claudePort
 		if cfg.harness == "pi" {
-			cfg.port = 7332
+			cfg.port = cfg.piPort
 		}
 	}
 	if cfg.port < 1 || cfg.port > 65535 {
@@ -107,6 +140,16 @@ func parseConfiguration(args []string) (configuration, error) {
 	}
 	cfg.root, err = filepath.Abs(cfg.root)
 	return cfg, err
+}
+
+func (c configuration) entries() []configuration {
+	if c.harness != "" {
+		return []configuration{c}
+	}
+	claude, pi := c, c
+	claude.harness, claude.port = "claude-code", c.claudePort
+	pi.harness, pi.port = "pi", c.piPort
+	return []configuration{claude, pi}
 }
 
 func (c configuration) directory() string { return filepath.Join(c.home, c.harness) }
@@ -164,5 +207,6 @@ func doctor(ctx context.Context, c configuration) error {
 		return fmt.Errorf("%s PTY 检查失败: %w\n%s", c.harness, err, output)
 	}
 	fmt.Printf("%s: %s", c.harness, output)
+	fmt.Printf("[%s] 检查通过：运行时与 PTY 可用；模型认证需通过实际会话验证。\n", c.harness)
 	return nil
 }

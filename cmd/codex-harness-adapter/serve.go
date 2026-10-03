@@ -18,14 +18,17 @@ import (
 )
 
 func serve(ctx context.Context, c configuration) error {
+	return serveRuntime(ctx, c, false)
+}
+
+func serveRuntime(ctx context.Context, c configuration, autoInit bool) error {
 	if c.harness == "" {
 		return errors.New("必须指定 --harness")
 	}
 	if runtime.GOOS != "windows" && len(c.socket()) > 100 {
 		return errors.New("状态路径过长，无法创建 Unix socket；请使用较短的 --home")
 	}
-	identity, err := readIdentity(filepath.Join(c.directory(), "identity"))
-	if err != nil {
+	if err := os.MkdirAll(c.directory(), 0o700); err != nil {
 		return err
 	}
 	lock, err := os.OpenFile(filepath.Join(c.directory(), "serve.lock"), os.O_CREATE|os.O_RDWR, 0o600)
@@ -37,16 +40,21 @@ func serve(ctx context.Context, c configuration) error {
 		return errors.New("此 harness 状态目录已有运行进程")
 	}
 	defer hostplatform.Unlock(lock)
-	if _, err := os.Stat(filepath.Join(c.directory(), "host_key")); err != nil {
-		return errors.New("缺少 HostKey，请先运行 init")
-	}
 	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	probe := exec.CommandContext(probeCtx, c.node, c.adapter(), "--runtime-info")
 	probe.Env = c.environment()
 	output, err := probe.Output()
+	probeErr := probeCtx.Err()
 	cancel()
 	if err != nil {
-		return fmt.Errorf("运行时检查失败，请运行 doctor: %w", err)
+		if probeErr != nil {
+			return probeErr
+		}
+		var failure *exec.ExitError
+		if errors.As(err, &failure) {
+			return fmt.Errorf("运行时检查失败，请运行 npm run doctor -- --harness %s: %w\n%s", c.harness, err, failure.Stderr)
+		}
+		return fmt.Errorf("运行时检查失败，请先 npm run build 并检查 Node 路径: %w", err)
 	}
 	var info struct {
 		Engine          string `json:"engine"`
@@ -57,6 +65,19 @@ func serve(ctx context.Context, c configuration) error {
 	}
 	if info.Engine != c.harness || info.ProtocolVersion == "" {
 		return errors.New("运行时身份不匹配")
+	}
+	if autoInit {
+		fmt.Printf("[%s] 检测通过，正在初始化并启动…\n", c.harness)
+		if err := initialize(c); err != nil {
+			return err
+		}
+	}
+	identity, err := readIdentity(filepath.Join(c.directory(), "identity"))
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(c.directory(), "host_key")); err != nil {
+		return errors.New("缺少 HostKey，请先运行 init")
 	}
 	version := info.ProtocolVersion + " (codex-harness-adapter-" + c.harness + ")"
 	if err := installEntry(c, version); err != nil {
@@ -151,6 +172,11 @@ func serve(ctx context.Context, c configuration) error {
 	}
 	defer server.Close()
 	fmt.Printf("%s SSH 就绪: %s；按 Ctrl-C 停止\n", c.harness, server.Addr())
+	if autoInit {
+		if err := printSSHConfig(c); err != nil {
+			return err
+		}
+	}
 	select {
 	case <-ctx.Done():
 		return nil

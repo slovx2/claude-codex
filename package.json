@@ -25,6 +25,7 @@
     "CONTRIBUTING.md"
   ],
   "scripts": {
+    "setup": "npm ci && npm ci --prefix packages/claude && npm ci --prefix packages/pi && npm run build",
     "dev": "tsx packages/claude/src/adapter.mts",
     "build": "npm run build --prefix packages/claude && npm run build --prefix packages/pi && node scripts/build-cli.mjs",
     "typecheck": "npm run typecheck --prefix packages/claude && npm run typecheck --prefix packages/pi",
@@ -38,6 +39,7 @@
     "docs:preview": "vitepress preview docs",
     "test": "npm run test --prefix packages/claude && npm run test --prefix packages/pi && go test ./...",
     "doctor": "node scripts/run-cli.mjs doctor",
+    "ssh-config": "node scripts/run-cli.mjs ssh-config",
     "workflow": "npm run build && node packages/claude/dist/claude/src/workflow-cli.mjs",
     "workflow:schedule": "npm run workflow -- schedule",
     "smoke:real": "npm run build && node scripts/smoke-real-claude.mjs",
@@ -46,7 +48,7 @@
     "acceptance:gui-ssh-localhost": "npm run build && node scripts/acceptance-gui-ssh-localhost.mjs",
     "acceptance:ssh-runtime-matrix": "npm run build && node scripts/acceptance-ssh-runtime-matrix.mjs",
     "probe:codex-cli-remote": "npm run build && node scripts/probe-codex-cli-remote.mjs",
-    "start": "node scripts/run-cli.mjs serve",
+    "start": "node scripts/run-cli.mjs start",
     "generate:schema": "codex app-server generate-ts --experimental --out generated/codex-app-server",
     "test:protocol": "npm run build && node scripts/test-protocol.mjs",
     "test:local-ssh": "node scripts/test-local-ssh.mjs"
@@ -64,6 +66,6 @@
     "vitepress": "1.6.4"
   },
   "engines": {
-    "node": "24.14.0"
+    "node": ">=24.14.0"
   }
 }

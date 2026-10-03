@@ -5,8 +5,9 @@ entry point; the full contributor guide lives in [docs/contributing.md](docs/con
 
 ## Before you start
 
-- Use Node.js 24 or newer. The adapter relies on stable `node:sqlite`.
-- Install dependencies with `npm install`.
+- 本机工具只要求最低稳定版本：Node.js >= 24.14.0、Go >= 1.26.6；Claude Code CLI >= 2.1.282、Pi CLI >= 0.99.1。允许更高稳定版，不要求用户安装精确版本或降级。
+- SDK/插件的仓库依赖仍按精确版本锁定，CI 使用 `protocol/versions.json` 的基线复现；环境版本范围与依赖锁是不同约束。
+- 使用 `npm run setup` 安装锁定依赖并构建，`npm start` 自动检测并启动可用引擎；缺失或失败入口只告警，`--harness` 可指定单引擎。
 - Keep changes small and reviewable. Separate runtime/protocol work, docs work,
   dependency updates, and release planning into different pull requests.
 - Do not commit secrets, local Claude Code session files, OAuth data, API keys,
@@ -29,12 +30,12 @@ whether any link-checking gap remains.
 
 ## Project layout
 
-- `src/adapter.mts` is the CLI and app-server entry point.
-- `src/server.mts` implements the Codex app-server protocol surface.
-- `src/*-runtime.mts` modules implement selectable Claude/Codex backends.
+- `packages/claude`、`packages/pi` 是并列的引擎适配器。
+- `packages/shared` 提供共享协议、传输和版本检测。
+- `cmd/codex-harness-adapter` 提供本机启动器，`sshserver` 提供通用 SSH 库。
 - `scripts/codex-shim` is the remote `codex` PATH shim.
 - `docs/` is the VitePress documentation site.
-- `test/` contains `node:test` coverage against compiled `dist/` output.
+- 各适配器的 `test/` 包含针对其编译输出的 `node:test` 测试。
 
 ## Pull request expectations
 

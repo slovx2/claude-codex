@@ -1,7 +1,10 @@
 # Configuration
 
-All configuration is environment-driven (`CHA_CLAUDE_*`). Set these in the
-remote login shell (e.g. `~/.zshenv`) or in `~/.codex-harness-adapter/runtime.env`.
+本地入口用 `npm start` 启动，在启动终端中设置环境变量即可；无需修改登录 shell 或全局 PATH。
+默认自动检测 Claude/Pi，`--harness` 可选择单引擎，`--claude-port` / `--pi-port` 可设置两个 SSH 端口，单引擎用 `--port`。
+完整命令见[开始使用](/guide/getting-started)，桌面连接见[配置指南](/guide/gui)。
+
+下列高级环境变量主要控制 Claude 适配器（`CHA_CLAUDE_*`）。Pi 使用原生 `PI_CODING_AGENT_DIR` 和 `PI_CLI`。
 
 ## Runtime backend
 
@@ -106,10 +109,10 @@ export CHA_CLAUDE_NODE="/absolute/path/to/node"
 | --- | --- |
 | `CHA_CLAUDE_ADAPTER` | Path to `packages/claude/dist/claude/src/adapter.mjs` (used by the shim). |
 | `CHA_CLAUDE_NODE` | Node binary the shim launches. |
-| `CHA_CLAUDE_COMPAT_VERSION` | Codex app-server version advertised (default `0.142.3`). |
+| `CHA_CLAUDE_COMPAT_VERSION` | Codex app-server version advertised (default `0.157.1`); separate from minimum CLI versions. |
 | `CHA_CLAUDE_VERSION_SUFFIX` | Tag after the version to distinguish the adapter from real codex (default `codex-harness-adapter`; set `""` to behave exactly like upstream codex). |
 | `CODEX_REAL` | Real Codex CLI for non-app-server commands / `codex` passthrough. |
-| `CHA_CLAUDE_CLI` | 宿主 Claude Code 可执行文件，默认从 PATH 查找 claude；Worker 从 TYRS_HAND_WORKER_CLAUDE_CLI 注入。运行时诊断要求 CLI >= 2.1.282，配置仍由独立 CLAUDE_CONFIG_DIR 提供。 |
+| `CHA_CLAUDE_CLI` | 宿主 Claude Code 可执行文件，默认从 PATH 查找 claude。运行时诊断接受 CLI >= 2.1.282 的稳定版，配置仍由原生 CLAUDE_CONFIG_DIR 提供。 |
 | `CHA_CLAUDE_RUNTIME_TYPE` | Active backend route. |
 | `CHA_CLAUDE_PROVIDER` | Provider descriptor id (`claude-code` or `codex`) mapped only to existing runtime behavior. |
 | `CHA_CLAUDE_AGENT_LOOP` | Agent-loop id (`native-claude-code-sdk` or `codex-jsonl-proxy`) mapped only to existing runtime behavior. |

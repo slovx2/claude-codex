@@ -2,6 +2,8 @@
 
 ## Toolchain
 
+本机环境最低要求为 Node.js 24.14.0、Go 1.26.6（源码构建）、Claude Code CLI 2.1.282、Pi CLI 0.99.1；接受更高稳定版，不要求安装精确版本。仓库 SDK、插件依赖与 CI 验证基线继续锁定，见 `protocol/versions.json`。
+
 | Tool | Role | Command |
 | --- | --- | --- |
 | [tsx](https://tsx.is) | Run `.mts` sources directly (dev loop) | `npm run dev` |
@@ -11,7 +13,8 @@
 | [VitePress](https://vitepress.dev) | This docs site | `npm run docs:dev` |
 
 ```bash
-npm install
+npm run setup       # 安装锁定依赖并构建两个适配器与本地 CLI
+npm start           # 自动检测并启动可用引擎；也可加 -- --harness pi
 npm run dev          # tsx src/adapter.mts — run sources directly, no build
 npm run build        # tsc -> dist/ (production artifact)
 npm run typecheck    # tsc --noEmit

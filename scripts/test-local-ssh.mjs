@@ -126,7 +126,7 @@ async function runHarness(harness, port) {
   assert.equal(result.status, 0, result.stderr)
   const config = join(home, 'ssh_config')
   await writeFile(config, result.stdout)
-  const service = spawn(cli, ['serve', ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] })
+  const service = spawn(cli, ['start', ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] })
   active.push(service)
   let errors = ''
   service.stderr.on('data', (chunk) => {
