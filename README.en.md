@@ -124,7 +124,7 @@ Press Ctrl-C to stop the foreground service. It cleans up its own runtime proces
 
 State is stored in `~/.codex-harness-adapter/<harness>/` by default. Use `--home` to select a different state root, `--node` to specify the Node.js executable, and `--root` to specify the source repository root.
 
-- **Connection is missing:** Make sure the SSH configuration is saved. Run `ssh codex-harness-adapter-pi 'codex --version'` to verify the endpoint.
+- **Connection is missing:** Make sure the SSH configuration is saved. Run `ssh codex-harness-adapter-claude 'codex --version'` to verify it; use `codex-harness-adapter-pi` for Pi, or your own alias if you renamed it.
 - **Runtime fails to start:** Run `npm run doctor -- --harness claude-code` (or `pi`) and inspect `runtime.log` in that harness's state directory.
 - **Port or state directory is already in use:** Stop the existing service, or choose a different `--home` and set `--claude-port` / `--pi-port` (`--port` for a single harness).
 - **Models are missing or authentication fails:** Check configuration and sign-in through the native CLI.

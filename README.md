@@ -124,7 +124,7 @@ npm start -- --claude-port 7441 --pi-port 7442
 
 默认状态位于 `~/.codex-harness-adapter/<harness>/`。`--home` 可以指定另一个状态根目录，`--node` 和 `--root` 分别指定 Node 路径和源码根目录。
 
-- **找不到连接**：确认 SSH 配置已保存，并运行 `ssh codex-harness-adapter-pi 'codex --version'` 验证入口。
+- **找不到连接**：确认 SSH 配置已保存，并运行 `ssh codex-harness-adapter-claude 'codex --version'` 验证入口；使用 Pi 时换成 `codex-harness-adapter-pi`，改过别名时使用自己的名称。
 - **运行时启动失败**：运行 `npm run doctor -- --harness claude-code`（或 `pi`），查看对应状态目录的 `runtime.log`。
 - **端口或目录被占用**：停止原服务，或为新实例选择不同的 `--home`，并用 `--claude-port` / `--pi-port`（单引擎用 `--port`）更改端口。
 - **缺少模型或认证失败**：在原生 CLI 中检查配置和登录。
