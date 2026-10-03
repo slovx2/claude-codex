@@ -1,5 +1,7 @@
 # codex-harness-adapter
 
+**简体中文** | [English](README.en.md)
+
 **在 Codex 桌面端连接各种 harness。**
 
 把 Claude Code 或 Pi 接入 Codex 的 SSH 连接入口，在同一个桌面界面中使用不同的编码引擎。适配器运行在你的机器上，复用引擎自己的工具、会话和配置。
