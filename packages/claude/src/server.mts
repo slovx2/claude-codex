@@ -27,7 +27,7 @@ import {
 import { dynamicToolResult } from './dynamic-tool-result.mjs'
 import { experimentalFeatureList, experimentalFeatureSet } from './experimental-features.mjs'
 import { GoalController } from './goal-controller.mjs'
-import { readMcpConfig } from './mcp.mjs'
+import { mergeMcpConfig, readMcpConfig } from './mcp.mjs'
 import { sdkMcpServers } from './mcp-config.mjs'
 import { elicitationParams, elicitationResponse } from './mcp-elicitation.mjs'
 import { mcpOAuthManager } from './mcp-oauth.mjs'
@@ -4606,7 +4606,7 @@ export class CodexClaudeAppServer {
     if (threadId !== null && !thread) throw new ProtocolError(-32602, '未知会话')
     const configured =
       threadId === null ? undefined : this.store.threadSettings(threadId).config?.mcp_servers
-    const servers = configured ?? this.configOverrides.mcp_servers ?? readMcpConfig()
+    const servers = mergeMcpConfig(readMcpConfig(), this.configOverrides.mcp_servers, configured)
     sdkMcpServers(servers)
     return {
       threadId,

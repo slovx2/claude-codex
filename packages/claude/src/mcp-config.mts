@@ -81,6 +81,14 @@ export function sdkMcpServers(
       )
         throw new ProtocolError(-32602, 'MCP tool_timeout_sec 必须至少一秒')
       result[name].timeout = Math.ceil(server.tool_timeout_sec * 1000)
+    } else if (server.timeout != null) {
+      if (
+        typeof server.timeout !== 'number' ||
+        !Number.isFinite(server.timeout) ||
+        server.timeout < 1
+      )
+        throw new ProtocolError(-32602, 'MCP timeout 必须是正数毫秒')
+      result[name].timeout = server.timeout
     }
   }
   return result
