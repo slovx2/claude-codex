@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/slovx2/codex-harness-adapter/internal/hostplatform"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,31 +40,9 @@ func serveRuntime(ctx context.Context, c configuration, autoInit bool) error {
 		return errors.New("此 harness 状态目录已有运行进程")
 	}
 	defer hostplatform.Unlock(lock)
-	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	probe := exec.CommandContext(probeCtx, c.node, c.adapter(), "--runtime-info")
-	probe.Env = c.environment()
-	output, err := probe.Output()
-	probeErr := probeCtx.Err()
-	cancel()
+	info, err := inspectRuntime(ctx, c)
 	if err != nil {
-		if probeErr != nil {
-			return probeErr
-		}
-		var failure *exec.ExitError
-		if errors.As(err, &failure) {
-			return fmt.Errorf("运行时检查失败，请运行 npm run doctor -- --harness %s: %w\n%s", c.harness, err, failure.Stderr)
-		}
-		return fmt.Errorf("运行时检查失败，请先 npm run build 并检查 Node 路径: %w", err)
-	}
-	var info struct {
-		Engine          string `json:"engine"`
-		ProtocolVersion string `json:"protocolVersion"`
-	}
-	if err := json.Unmarshal(output, &info); err != nil {
 		return err
-	}
-	if info.Engine != c.harness || info.ProtocolVersion == "" {
-		return errors.New("运行时身份不匹配")
 	}
 	if autoInit {
 		fmt.Printf("[%s] 检测通过，正在初始化并启动…\n", c.harness)
@@ -88,23 +66,27 @@ func serveRuntime(ctx context.Context, c configuration, autoInit bool) error {
 		return err
 	}
 	defer hostplatform.RemoveSocket(c.socket())
-	log, err := os.OpenFile(filepath.Join(c.directory(), "runtime.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	log, err := openLocalLog(c, "runtime.log")
 	if err != nil {
 		return err
 	}
 	defer log.Close()
 	process := exec.Command(c.node, c.adapter(), "app-server", "--listen", hostplatform.ListenURL(c.socket()))
 	process.Env = c.environment()
-	process.Stdout, process.Stderr = log, io.MultiWriter(os.Stderr, log)
+	process.Stdout, process.Stderr = log, log
+	runtimeFailure := func(message string, cause error) error {
+		fmt.Fprintf(log, "\n%s: %v\n", message, cause)
+		return fmt.Errorf("%s，请重试；若仍失败，请查看日志 %s", message, filepath.Join(c.directory(), "runtime.log"))
+	}
 	hostplatform.Prepare(process)
 	if err := process.Start(); err != nil {
-		return err
+		return runtimeFailure("引擎启动失败", err)
 	}
 	cleanup, err := hostplatform.Track(process)
 	if err != nil {
 		_ = hostplatform.Kill(process)
 		_ = process.Wait()
-		return err
+		return runtimeFailure("无法管理引擎进程", err)
 	}
 	defer cleanup()
 	done := make(chan struct{})
@@ -129,9 +111,9 @@ func serveRuntime(ctx context.Context, c configuration, autoInit bool) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-done:
-			return fmt.Errorf("运行时提前退出: %v", waitErr)
+			return runtimeFailure("引擎启动失败", waitErr)
 		case <-deadline.C:
-			return errors.New("等待运行时 socket 超时")
+			return runtimeFailure("引擎启动超时", context.DeadlineExceeded)
 		case <-ticker.C:
 			connection, err := hostplatform.Dial(c.socket())
 			if err == nil {
@@ -142,7 +124,7 @@ func serveRuntime(ctx context.Context, c configuration, autoInit bool) error {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return err
+		return runtimeFailure("无法读取用户主目录", err)
 	}
 	shell := hostplatform.DefaultShell()
 	server, err := sshserver.StartSSHServer(ctx, sshserver.SSHOptions{
@@ -168,7 +150,12 @@ func serveRuntime(ctx context.Context, c configuration, autoInit bool) error {
 		},
 	})
 	if err != nil {
-		return err
+		var operation *net.OpError
+		if errors.As(err, &operation) && operation.Op == "listen" {
+			fmt.Fprintf(log, "\nSSH 监听失败: %v\n", err)
+			return fmt.Errorf("SSH 端口 %d 无法使用，请关闭占用程序或更改此引擎的 SSH 端口", c.port)
+		}
+		return runtimeFailure("SSH 入口启动失败", err)
 	}
 	defer server.Close()
 	fmt.Printf("%s SSH 就绪: %s；按 Ctrl-C 停止\n", c.harness, server.Addr())
@@ -181,6 +168,6 @@ func serveRuntime(ctx context.Context, c configuration, autoInit bool) error {
 	case <-ctx.Done():
 		return nil
 	case <-done:
-		return fmt.Errorf("%s 运行时已退出: %v", c.harness, waitErr)
+		return runtimeFailure("引擎已停止", waitErr)
 	}
 }

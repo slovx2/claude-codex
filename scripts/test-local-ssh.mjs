@@ -122,6 +122,9 @@ async function runHarness(harness, port) {
   assert.equal(result.status, 0, result.stderr)
   const doctor = spawnSync(cli, ['doctor', ...args], { env, encoding: 'utf8', timeout: 30000 })
   assert.equal(doctor.status, 0, doctor.stderr + doctor.stdout)
+  const internalOutput = /releaseReady|cliSha256|ExperimentalWarning|pty-self-check ok/
+  assert.match(doctor.stdout, /检查通过/)
+  assert.doesNotMatch(doctor.stdout + doctor.stderr, internalOutput)
   result = spawnSync(cli, ['ssh-config', ...args], { env, encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
   const config = join(home, 'ssh_config')
@@ -129,6 +132,10 @@ async function runHarness(harness, port) {
   const service = spawn(cli, ['start', ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] })
   active.push(service)
   let errors = ''
+  let serviceOutput = ''
+  service.stdout.on('data', (chunk) => {
+    serviceOutput += chunk
+  })
   service.stderr.on('data', (chunk) => {
     errors += chunk
   })
@@ -262,6 +269,7 @@ async function runHarness(harness, port) {
     assert.match(JSON.stringify(history), harness === 'pi' ? /PI_SSH_OK/ : /CLAUDE_SSH_OK/)
     if (mock) assert.ok(mock.requests.length > 0)
     else assert.ok(calls > 0)
+    assert.doesNotMatch(serviceOutput + errors, internalOutput)
     console.log(`${harness}: SSH 认证、版本探测、WebSocket、真实 SDK 回合及历史 PASS`)
   } finally {
     ws.close()

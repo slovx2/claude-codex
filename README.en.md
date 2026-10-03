@@ -102,7 +102,7 @@ npm run doctor
 
 Replace `claude-code` with `pi` to display or check Pi. Specify `--harness` when you only installed one harness. `doctor` checks runtime identity, versions, and a real PTY. Without a harness selection, it checks both and exits nonzero if either is missing or fails; this does not mean the other running endpoint is unavailable. Model authentication must be verified through an actual session.
 
-Use the final “检查通过” (checks passed) message and exit code to assess the local environment check. The detailed `releaseReady: false` field means the project has not claimed complete release acceptance; Node's SQLite experimental warning alone does not indicate a failed check.
+Diagnostics show a clear result, with a next step and log location if a check fails. Detailed startup and diagnostic records are saved as `runtime.log` and `diagnostics.log` in each harness's state directory for troubleshooting.
 
 ## Ports and advanced startup
 

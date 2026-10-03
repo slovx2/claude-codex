@@ -191,22 +191,17 @@ func doctor(ctx context.Context, c configuration) error {
 		if _, err := exec.LookPath(hostplatform.DefaultShell()); err != nil {
 			return fmt.Errorf("Windows SSH 需要 Git for Windows 的 bash.exe: %w", err)
 		}
-		fmt.Println("Windows: 使用 ConPTY 和命名管道；Claude 受限 Bash 不可用，需要显式完全访问或 WSL2 沙箱")
+		if c.harness == "claude-code" {
+			fmt.Println("Windows 上的 Claude 命令执行需要显式选择完全访问；需要系统沙箱时请使用 WSL2。")
+		}
 	}
-	command := exec.CommandContext(ctx, c.node, c.adapter(), "--runtime-info")
-	command.Env = c.environment()
-	output, err := command.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s 运行时检查失败: %w\n%s", c.harness, err, output)
+	if _, err := inspectRuntime(ctx, c); err != nil {
+		return fmt.Errorf("[%s] %w", c.harness, err)
 	}
-	fmt.Printf("%s: %s", c.harness, output)
-	command = exec.CommandContext(ctx, c.node, c.adapter(), "--pty-self-check")
-	command.Env = c.environment()
-	output, err = command.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s PTY 检查失败: %w\n%s", c.harness, err, output)
+	if _, err := runDiagnostic(ctx, c, "--pty-self-check"); err != nil {
+		return fmt.Errorf("[%s] %w", c.harness, err)
 	}
-	fmt.Printf("%s: %s", c.harness, output)
-	fmt.Printf("[%s] 检查通过：运行时与 PTY 可用；模型认证需通过实际会话验证。\n", c.harness)
+	fmt.Printf("[%s] 检查通过：引擎与终端可用。\n", c.harness)
+	fmt.Println("下一步：运行 npm start 并连接 Codex；模型登录和回复请在会话中确认。")
 	return nil
 }
